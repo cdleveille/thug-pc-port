@@ -1,0 +1,7 @@
+[
+  {
+    "start": "0x002007DC",
+    "observed": true,
+    "note": "XPP: USB host-controller driver init (pool tag 'MU__', clears 0x3004 bytes at 0x35F1C0). Reached only through a pointer; observed at runtime as an unresolved ICALL. The linear sweep misaligns on the data table before it and decodes its prologue (55 8B EC) as part of an add."
+  }
+]

@@ -1,0 +1,1206 @@
+diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
+index 94e57da..9d02711 100644
+--- a/src/apu/apu_vp.c
++++ b/src/apu/apu_vp.c
+@@ -1668,6 +1668,25 @@ static void vp_trace_positions(MCPXAPUState *d)
+     }
+ }
+ 
++/* A voice list named a handle the hardware cannot have. Rate-limited: one
++ * line at 1, 10, 100... occurrences, which is enough to tell a one-off torn
++ * read from a list that is wrong every frame. */
++static void vp_bad_handle_report(int list, uint32_t v)
++{
++    static uint64_t count;
++    uint64_t n = ++count;
++
++    while (n >= 10 && n % 10 == 0)
++        n /= 10;
++    if (n != 1)
++        return;
++    fprintf(stderr, "[APU] voice list %d names handle 0x%04X (only 0..%d or "
++                    "0xFFFF are valid); list ended there, %llu time(s)\n",
++            list, (unsigned)v, MCPX_HW_MAX_VOICES - 1,
++            (unsigned long long)count);
++    fflush(stderr);
++}
++
+ void mcpx_apu_vp_frame(MCPXAPUState *d,
+                         float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+ {
+@@ -1688,6 +1707,19 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+             }
+ 
+             uint16_t v = (uint16_t)d->regs[current];
++
++            /* The loop bound above stops a cycle, not a bad handle. The MCPX
++             * has 256 voices; any other value but the 0xFFFF terminator
++             * indexes past every per-voice table here (the debug state,
++             * the voice locks, the resampler state) -- voice_process's
++             * assert is compiled out in a release build. Tony Hawk's
++             * Underground reached one while reloading sound for its main
++             * menu, and the write through g_dbg.vp.v[v] segfaulted the VP
++             * thread. Treat it as the end of the list for this frame. */
++            if (v >= MCPX_HW_MAX_VOICES) {
++                vp_bad_handle_report(list, v);
++                break;
++            }
+             d->regs[next] = voice_get_mask(d, v, NV_PAVS_VOICE_TAR_PITCH_LINK,
+                                NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
+ 
+diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
+index a5ea9cc..7603191 100644
+--- a/src/kernel/nv2a_pb_exec.c
++++ b/src/kernel/nv2a_pb_exec.c
+@@ -309,6 +309,11 @@ static struct {
+      * those and read it with the framebuffer's pitch: horizontal noise. The
+      * biggest surface drawn since the last flip is the one being presented. */
+     uint32_t drawn_pitch, drawn_x, drawn_y, drawn_w, drawn_h, drawn_bpp;
++    /* The drawn surface's size as the title programmed it, before the
++     * anti-aliasing scale: the resolution the picture is rendered at. Kept
++     * here because by the flip the current surface (and its AA factor) may
++     * already be another one. */
++    uint32_t drawn_logical_w, drawn_logical_h;
+     int drawn_stale;      /* set at a flip: the next draw starts a new frame */
+     uint64_t pixels;
+     uint32_t pixel_max;   /* brightest value any pixel write carried */
+@@ -632,6 +637,8 @@ static void note_drawn(void)
+     s_gpu.drawn_bpp = surface_bpp();
+     s_gpu.drawn_x = s_gpu.clip_x; s_gpu.drawn_y = s_gpu.clip_y;
+     s_gpu.drawn_w = s_gpu.clip_w; s_gpu.drawn_h = s_gpu.clip_h;
++    s_gpu.drawn_logical_w = (s_gpu.clip_raw_h >> 16) & 0xFFFF;
++    s_gpu.drawn_logical_h = (s_gpu.clip_raw_v >> 16) & 0xFFFF;
+ }
+ 
+ static uint32_t surface_bpp(void)
+@@ -3302,8 +3309,16 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+      * are already surface units. The hardware draws such a vertex (xemu
+      * clamps w away from zero, in front of the eye), but raster_xf_clipped
+      * would count it behind the eye. w = 1 draws it at the same place and
+-     * keeps 1/w finite. -0 stays behind the eye and is clipped, as on xemu. */
+-    if (out->pos[3] == 0.0f && !signbit(out->pos[3]))
++     * keeps 1/w finite. -0 stays behind the eye and is clipped, as on xemu.
++     *
++     * +inf is the same case from the other side: a pre-transformed vertex
++     * whose RHW is 0 goes through D3D's passthrough program's `rcp`, and
++     * 1/0 is +inf. Bink's Xbox blitter submits its movie quad exactly so
++     * (Tony Hawk's Underground: every movie frame drew 0 pixels, w = inf),
++     * and the hardware shows it; xemu clamps oPos.w for 0 and inf alike.
++     * In clip space x*w is inf and the clipper turns it to NaN, so without
++     * this the whole quad was dropped. -inf stays behind the eye. */
++    if ((out->pos[3] == 0.0f || isinf(out->pos[3])) && !signbit(out->pos[3]))
+         out->pos[3] = 1.0f;
+     /* The program's viewport is in logical pixels; the surface may be larger
+      * (anti-aliasing). */
+@@ -4521,9 +4536,15 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+          * writing. */
+         {
+             extern void xbox_FramebufferWindowFrameStats(uint32_t);
++            extern void xbox_FramebufferWindowSetResolution(uint32_t, uint32_t);
+             static uint32_t draws_at_flip;
+             xbox_FramebufferWindowFrameStats(s_gpu.draws - draws_at_flip);
+             draws_at_flip = s_gpu.draws;
++            /* For the title bar: the resolution of the frame being
++             * presented, not the window's size. */
++            if (s_gpu.drawn_offset)
++                xbox_FramebufferWindowSetResolution(s_gpu.drawn_logical_w,
++                                                    s_gpu.drawn_logical_h);
+         }
+         if (s_gpu.pitch) {
+             extern void xbox_FramebufferWindowPresent(uint32_t, uint32_t);
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+index 7ade793..622caf0 100644
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -83,9 +83,9 @@ static void *g_mirror_views[XBOX_NUM_MIRRORS] = {0};
+  * question. */
+ static void *g_span_base = NULL;
+ static size_t g_span_size = 0;
+-/* POSIX, RECOMP_EXT_VMA only: the span holds the whole 4 GB guest window, and
+- * every fixed-address window is carved out of it (layout_map_view,
+- * layout_commit_at). See the span reservation in xbox_MemoryLayoutInit. */
++/* POSIX: the span holds the whole 4 GB guest window, and every fixed-address
++ * window is carved out of it (layout_map_view, layout_commit_at). See the span
++ * reservation in xbox_MemoryLayoutInit. */
+ static int g_span_whole_window = 0;
+ 
+ /* POSIX: hand back the part of our span reservation a fixed-address window is
+@@ -746,7 +746,13 @@ static void ac97_arm_write_trap(void)
+     return;
+ #endif
+     g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
+-#if !defined(_WIN32) && defined(__aarch64__)
++    /* Every POSIX host with a store decoder takes this path. It was arm64
++     * only, so x86-64 Linux fell through to the Win32 arm below, whose
++     * AddVectoredExceptionHandler is a stub there: the trap never armed and
++     * DirectSound's first channel reset spun forever, although
++     * xbox_Ac97PosixFault and mmio_emulate_x86_64 were already in place. */
++#if !defined(_WIN32) && (defined(__aarch64__) \
++        || (defined(__x86_64__) && defined(__linux__)))
+     (void)old;
+     g_ac97_hsize = (size_t)sysconf(_SC_PAGESIZE);
+     if (g_ac97_hsize < AC97_TRAP_BYTES)
+@@ -2625,18 +2631,23 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+          * otherwise run to 0xE8000000 and hold 0x80000000 against it. */
+         if (g_span_size > XBOX_CONTIG_BASE)
+             g_span_size = XBOX_CONTIG_BASE;
+-        /* RECOMP_EXT_VMA: hold the whole 4 GB guest window, as Windows does
+-         * with its placeholder. Linux places mappings top-down, so the host
+-         * range just above a fresh span is usually already taken: guest_vmem's
+-         * fixed reservation there failed (ENOMEM), and a span grown only to
+-         * GUEST_VMEM_TOP pushed the contiguous window onto the neighbour
+-         * instead. Each fixed window is carved out of the span as it is
+-         * mapped, and guest_vmem's range is handed over just before
+-         * guest_vmem_init. Off by default; the stock span is unchanged. */
+-        if (ext_vma_span(g_span_size)) {
+-            g_span_size = (size_t)1 << 32;
+-            g_span_whole_window = 1;
+-        }
++        /* Hold the whole 4 GB guest window, as Windows does with its
++         * placeholder. Linux places mappings top-down, so the host range just
++         * above a fresh base + mirrors span is often already taken.
++         *
++         * This used to happen only under RECOMP_EXT_VMA, where guest_vmem's
++         * fixed reservation there failed (ENOMEM). It is now unconditional,
++         * because a title that opens its window first (RECOMP_FB_WINDOW: SDL
++         * and the GL driver initialise on the main thread before the guest
++         * boots) has the driver's mappings sitting exactly where the
++         * contiguous window goes. Tony Hawk's Underground then logged
++         * "contiguous window at 0x80000000 ... failed (error 8)" and segfaulted
++         * on its first GPU allocation, guest 0x81000000. Each fixed window is
++         * carved out of the span as it is mapped (layout_map_view,
++         * layout_commit_at), and under RECOMP_EXT_VMA guest_vmem's range is
++         * handed over just before guest_vmem_init. */
++        g_span_size = (size_t)1 << 32;
++        g_span_whole_window = 1;
+         g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
+         if (g_span_base) {
+             VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
+diff --git a/src/platform/mmio_decode_x86_64.h b/src/platform/mmio_decode_x86_64.h
+index 1f9836e..3c3c315 100644
+--- a/src/platform/mmio_decode_x86_64.h
++++ b/src/platform/mmio_decode_x86_64.h
+@@ -15,8 +15,15 @@
+  * decoded with its disp32, so its length is right too.
+  *
+  * Covered forms: MOV 88/89 8A/8B, MOV moffs A0-A3, MOVZX 0F B6/B7, MOVSX
+- * 0F BE/BF, MOV r/m,imm C6/C7, MOVD/MOVQ 0F 6E/7E between XMM and r/m, and
+- * MOVUPS/MOVAPS 0F 10/11 (four dword accesses). Anything else returns 0 and
++ * 0F BE/BF, MOV r/m,imm C6/C7, MOVD/MOVQ 0F 6E/7E between XMM and r/m,
++ * MOVUPS/MOVAPS 0F 10/11 (four dword accesses), and the ALU and flag-setting
++ * forms the Win32 decoder (mmio_decode.h) covers: two-operand
++ * ADD/OR/AND/SUB/XOR/CMP in both directions (00-03 08-0B 20-23 28-2B 30-33
++ * 38-3B), group 1 with an immediate (80/81/83, not ADC/SBB), and TEST against
++ * a register or an immediate (84/85, F6/F7 /0 and /1). Those matter more here
++ * than on Windows: clang at -O2 folds a lifted `MEM32(reg) & imm` straight
++ * into `test dword [mem], imm32`, which is how XDK DirectSound polls the APU.
++ * Anything else returns 0 and
+  * logs the faulting RIP plus the first eight opcode bytes once per unique
+  * opcode -- stepping an instruction that was not understood corrupts the
+  * guest silently, which is far worse than a fault naming the opcode.
+@@ -203,6 +210,54 @@ static inline uint64_t mmio_x86_imm(const uint8_t *p, int size, int *len)
+                                       | ((uint32_t)p[3] << 24));
+ }
+ 
++/* The ALU operations, numbered as the reg field of group 1 (80/81/83) and as
++ * bits 5:3 of the classic two-operand opcodes. TEST has no slot of its own.
++ * Same numbering as mmio_decode.h. */
++enum { MMIO_X86_ALU_ADD = 0, MMIO_X86_ALU_OR = 1, MMIO_X86_ALU_AND = 4,
++       MMIO_X86_ALU_SUB = 5, MMIO_X86_ALU_XOR = 6, MMIO_X86_ALU_CMP = 7,
++       MMIO_X86_ALU_TEST = 8 };
++
++/* a OP b at the given width, with the flags a following jcc reads: ZF, SF, CF
++ * and OF, written into the saved RFLAGS so they are live when the thread
++ * resumes. PF and AF are left alone, as in mmio_decode.h; nothing branches on
++ * them after a register read. The logical operations clear CF and OF, as the
++ * hardware does. */
++static inline uint64_t mmio_x86_alu(mmio_ctx_t *uc, int op, uint64_t a,
++                                    uint64_t b, int size)
++{
++    uint64_t m = mmio_x86_size_mask(size), sign = 1ULL << (size * 8 - 1), r;
++    uint64_t efl;
++    int cf = 0, of = 0;
++
++    a &= m;
++    b &= m;
++    switch (op) {
++    case MMIO_X86_ALU_ADD:
++        r  = (a + b) & m;
++        cf = r < a;
++        of = ((~(a ^ b) & (a ^ r)) & sign) != 0;
++        break;
++    case MMIO_X86_ALU_SUB:
++    case MMIO_X86_ALU_CMP:
++        r  = (a - b) & m;
++        cf = a < b;
++        of = (((a ^ b) & (a ^ r)) & sign) != 0;
++        break;
++    case MMIO_X86_ALU_OR:  r = a | b; break;
++    case MMIO_X86_ALU_XOR: r = a ^ b; break;
++    default:               r = a & b; break;       /* AND, TEST */
++    }
++
++    memcpy(&efl, &uc->uc_mcontext.gregs[REG_EFL], sizeof efl);
++    efl &= ~(uint64_t)(0x0001u | 0x0040u | 0x0080u | 0x0800u);
++    if (cf)       efl |= 0x0001u;                   /* CF */
++    if (r == 0)   efl |= 0x0040u;                   /* ZF */
++    if (r & sign) efl |= 0x0080u;                   /* SF */
++    if (of)       efl |= 0x0800u;                   /* OF */
++    memcpy(&uc->uc_mcontext.gregs[REG_EFL], &efl, sizeof efl);
++    return r;
++}
++
+ /* One-shot diagnostic: one line per unique opcode prefix, not per fault. A
+  * title can take thousands of faults on a form that is not decoded, and a
+  * line per fault both floods the log and hides the other forms. */
+@@ -286,7 +341,98 @@ static inline int mmio_emulate_x86_64(mmio_ctx_t *uc, uint32_t off, void *dev,
+     op = ip + prefix;
+     size = rex_w ? 8 : (has66 ? 2 : 4);
+ 
++    /* Two-operand ALU: 00-03 ADD, 08-0B OR, 20-23 AND, 28-2B SUB, 30-33 XOR,
++     * 38-3B CMP. Bit 0 clear is the byte form; bit 1 set makes the register
++     * the destination. 10-1B (ADC/SBB) are not decoded. A register
++     * destination reads the device once; a memory destination reads, then
++     * writes (CMP only reads). */
++    if (op[0] < 0x40 && (op[0] & 7) < 4) {
++        int alu = op[0] >> 3;
++        uint64_t m;
++
++        if (alu == 2 || alu == 3)
++            goto undecoded;
++        if (!(op[0] & 1))
++            size = 1;
++        mlen = mmio_x86_modrm(op + 1, rex_r, rex_b,
++                              &mod, &reg, &rm, &rip_rel);
++        if (mod == 3)
++            goto undecoded;
++        m = rd(dev, off, size);
++        if (op[0] & 2) {                            /* op r, r/m */
++            v = mmio_x86_alu(uc, alu,
++                             mmio_x86_read_operand_reg(uc, reg, size, has_rex),
++                             m, size);
++            if (alu != MMIO_X86_ALU_CMP)
++                mmio_x86_write_operand_reg(uc, reg, v, size, has_rex);
++        } else {                                    /* op r/m, r */
++            v = mmio_x86_alu(uc, alu, m,
++                             mmio_x86_read_operand_reg(uc, reg, size, has_rex),
++                             size);
++            if (alu != MMIO_X86_ALU_CMP)
++                wr(dev, off, v, size);
++        }
++        MMIO_CTX_SET_PC(uc, MMIO_CTX_PC(uc) + prefix + 1 + mlen);
++        return 1;
++    }
++
+     switch (op[0]) {
++    case 0x84:                                  /* TEST r/m8, r8 */
++    case 0x85: {                                /* TEST r/m, r   */
++        if (op[0] == 0x84)
++            size = 1;
++        mlen = mmio_x86_modrm(op + 1, rex_r, rex_b,
++                              &mod, &reg, &rm, &rip_rel);
++        if (mod == 3)
++            goto undecoded;
++        mmio_x86_alu(uc, MMIO_X86_ALU_TEST, rd(dev, off, size),
++                     mmio_x86_read_operand_reg(uc, reg, size, has_rex), size);
++        MMIO_CTX_SET_PC(uc, MMIO_CTX_PC(uc) + prefix + 1 + mlen);
++        return 1;
++    }
++
++    case 0x80:                                  /* group 1 r/m8, imm8 */
++    case 0x81:                                  /* group 1 r/m, imm   */
++    case 0x83: {                                /* group 1 r/m, imm8  */
++        int alu = (op[1] >> 3) & 7;
++
++        if (alu == 2 || alu == 3)               /* ADC, SBB */
++            goto undecoded;
++        if (op[0] == 0x80)
++            size = 1;
++        mlen = mmio_x86_modrm(op + 1, rex_r, rex_b,
++                              &mod, &reg, &rm, &rip_rel);
++        if (mod == 3)
++            goto undecoded;
++        if (op[0] == 0x83) {                    /* imm8, sign-extended */
++            imm  = (uint64_t)(int64_t)(int8_t)op[1 + mlen];
++            ilen = 1;
++        } else {
++            imm = mmio_x86_imm(op + 1 + mlen, size, &ilen);
++        }
++        v = mmio_x86_alu(uc, alu, rd(dev, off, size), imm, size);
++        if (alu != MMIO_X86_ALU_CMP)
++            wr(dev, off, v, size);
++        MMIO_CTX_SET_PC(uc, MMIO_CTX_PC(uc) + prefix + 1 + mlen + ilen);
++        return 1;
++    }
++
++    case 0xF6:                                  /* TEST r/m8, imm8 */
++    case 0xF7: {                                /* TEST r/m, imm   */
++        if (((op[1] >> 3) & 7) > 1)             /* /1 aliases /0; rest is NOT/NEG/MUL/DIV */
++            goto undecoded;
++        if (op[0] == 0xF6)
++            size = 1;
++        mlen = mmio_x86_modrm(op + 1, rex_r, rex_b,
++                              &mod, &reg, &rm, &rip_rel);
++        if (mod == 3)
++            goto undecoded;
++        imm = mmio_x86_imm(op + 1 + mlen, size, &ilen);
++        mmio_x86_alu(uc, MMIO_X86_ALU_TEST, rd(dev, off, size), imm, size);
++        MMIO_CTX_SET_PC(uc, MMIO_CTX_PC(uc) + prefix + 1 + mlen + ilen);
++        return 1;
++    }
++
+     case 0x88:                                  /* MOV r/m8, r8   (store) */
+     case 0x89: {                                /* MOV r/m, r     (store) */
+         if (op[0] == 0x88)
+diff --git a/src/video/fb_present.c b/src/video/fb_present.c
+index cee70c0..e5b0c3c 100644
+--- a/src/video/fb_present.c
++++ b/src/video/fb_present.c
+@@ -241,6 +241,16 @@ void xbox_FramebufferWindowFrameStats(uint32_t draws)
+     InterlockedExchange(&s_frame_draws, (LONG)draws);
+ }
+ 
++/* The resolution the presented frame was rendered at (before anti-aliasing
++ * scale), for the title bar; packed so width and height come from one frame. */
++static volatile LONG s_res_packed;
++
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h)
++{
++    InterlockedExchange(&s_res_packed,
++                        (LONG)(((w & 0xFFFFu) << 16) | (h & 0xFFFFu)));
++}
++
+ /* Alt+Enter / F11: borderless fullscreen on the window's monitor, and back.
+  * (DXGI's own Alt+Enter, exclusive mode at the frame's 640x480, is off --
+  * gpu_present.c; both presenters letterbox to any size.) */
+@@ -618,9 +628,14 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+             DWORD now = GetTickCount();
+             if (now - t0 >= 1000) {
+                 LONG f = s_flips;
+-                wchar_t tb[128];
+-                _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
+-                           t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
++                uint32_t res = (uint32_t)s_res_packed;
++                wchar_t tb[128], rs[32] = L"";
++                if ((res >> 16) && (res & 0xFFFFu))
++                    _snwprintf(rs, 31, L"%ux%u | ",
++                               (unsigned)(res >> 16), (unsigned)(res & 0xFFFFu));
++                rs[31] = 0;
++                _snwprintf(tb, 127, L"%ls | %lsFPS: %.1f | draws: %ld", s_title,
++                           rs, t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
+                            (long)s_frame_draws);
+                 tb[127] = 0;
+                 SetWindowTextW(hwnd, tb);
+diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
+index b9b8c3e..615f37d 100644
+--- a/src/video/fb_present_sdl.c
++++ b/src/video/fb_present_sdl.c
+@@ -94,9 +94,13 @@ void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch)
+         s_fb_pitch = pitch;
+ }
+ 
+-/* ponytail: the SDL window shows the surface unscaled; 2x2 anti-aliased
+- * surfaces (#162) come through at twice the height until it honours this. */
+-void xbox_FramebufferWindowSetAA(uint32_t sy) { (void)sy; }
++/* Vertical anti-aliasing factor of the surface being shown: 2 for 2x2, where
++ * the surface has twice the rows as well as twice the columns, and 1 for
++ * everything else (2x1 included). Only the pushbuffer executor knows it; same
++ * contract as fb_present.c. */
++static volatile uint32_t s_fb_aa_sy = 1;
++
++void xbox_FramebufferWindowSetAA(uint32_t sy) { s_fb_aa_sy = sy ? sy : 1; }
+ 
+ /* The window is opened by xbox_HostWindowMain, on the main thread. */
+ void xbox_FramebufferWindowStart(void) {}
+@@ -127,15 +131,26 @@ static void publish(uint32_t bpp)
+     }
+ }
+ 
++/* Copy the finished frame into the back slot.
++ *
++ * pitch / FB_W is 2 or 4 for a plain 16- or 32-bit surface, and 8 for a
++ * 2x-wide anti-aliased 32-bit one (2x1 or 2x2 multisampling: 1280 columns at
++ * 4 bytes). The 8 case used to be rejected outright, so a title rendering
++ * anti-aliased -- Tony Hawk's Underground presents its 1280x480 surface --
++ * never published a frame and the window stayed black while the executor
++ * drew correctly. As in fb_present.c, take every other pixel, and step rows
++ * by the vertical factor for 2x2. */
+ static void present_copy(uint32_t fb_va, uint32_t pitch)
+ {
+     struct fb_slot *s = &s_slot[s_back];
+     const uint8_t *src;
+-    uint32_t bpp = pitch / FB_W, y;
++    uint32_t src_bpp = pitch / FB_W, bpp, y, x, row_step;
+     size_t need;
+ 
+-    if (bpp != 2 && bpp != 4)
++    if (src_bpp != 2 && src_bpp != 4 && src_bpp != 8)
+         return;
++    bpp = src_bpp == 8 ? 4 : src_bpp;
++    row_step = src_bpp == 8 ? s_fb_aa_sy : 1;
+     need = (size_t)FB_W * FB_H * bpp;
+     if (s->cap < need) {
+         uint8_t *n = (uint8_t *)realloc(s->px, need);
+@@ -145,9 +160,19 @@ static void present_copy(uint32_t fb_va, uint32_t pitch)
+         s->cap = need;
+     }
+     src = (const uint8_t *)((uintptr_t)fb_va + xbox_GetMemoryOffset());
+-    for (y = 0; y < FB_H; y++)
+-        memcpy(s->px + (size_t)y * FB_W * bpp, src + (size_t)y * pitch,
+-               (size_t)FB_W * bpp);
++    for (y = 0; y < FB_H; y++) {
++        const uint8_t *row = src + (size_t)y * pitch * row_step;
++        uint8_t *dst = s->px + (size_t)y * FB_W * bpp;
++
++        if (src_bpp == 8) {
++            const uint32_t *p = (const uint32_t *)row;
++            uint32_t *d = (uint32_t *)dst;
++            for (x = 0; x < FB_W; x++)
++                d[x] = p[x * 2];
++        } else {
++            memcpy(dst, row, (size_t)FB_W * bpp);
++        }
++    }
+     publish(bpp);
+ }
+ 
+@@ -165,7 +190,8 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
+     __atomic_sub_fetch(&s_in_present, 1, __ATOMIC_SEQ_CST);
+ }
+ 
+-/* Title bar: "<XBE title> | FPS: n | draws: n", as the GDI window shows it.
++/* Title bar: "<XBE title> | WxH | FPS: n | draws: n", as the GDI window
++ * shows it (WxH once the executor has reported a frame).
+  * Written by the loader and the flip, read once a second by the main
+  * thread; a torn read shows one stale value for a second. */
+ static char s_title[128] = "Xbox Recomp";
+@@ -208,6 +234,18 @@ void xbox_FramebufferWindowFrameStats(uint32_t draws)
+     __atomic_store_n(&s_frame_draws, draws, __ATOMIC_RELAXED);
+ }
+ 
++/* The resolution the presented frame was rendered at (before anti-aliasing
++ * scale), for the title bar. 0 until the first flip says otherwise. Packed in
++ * one word so the title never shows a width from one frame and a height from
++ * another. */
++static uint32_t s_res_packed;
++
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h)
++{
++    __atomic_store_n(&s_res_packed, ((w & 0xFFFFu) << 16) | (h & 0xFFFFu),
++                     __ATOMIC_RELAXED);
++}
++
+ /* ── The guest thread ─────────────────────────────────────────────────── */
+ 
+ static int (*s_guest_main)(void);
+@@ -426,8 +464,12 @@ int xbox_HostWindowMain(int (*guest_main)(void))
+         now = now_ms();
+         if (now - t_title >= 1000) {
+             uint64_t f = __atomic_load_n(&s_flips, __ATOMIC_RELAXED);
+-            char tb[192];
+-            snprintf(tb, sizeof tb, "%s | FPS: %.1f | draws: %u", s_title,
++            uint32_t res = __atomic_load_n(&s_res_packed, __ATOMIC_RELAXED);
++            char tb[192], rs[32] = "";
++            if ((res >> 16) && (res & 0xFFFFu))
++                snprintf(rs, sizeof rs, "%ux%u | ",
++                         (unsigned)(res >> 16), (unsigned)(res & 0xFFFFu));
++            snprintf(tb, sizeof tb, "%s | %sFPS: %.1f | draws: %u", s_title, rs,
+                      t_title ? (double)(f - flips_title) * 1000.0 / (double)(now - t_title)
+                              : 0.0,
+                      (unsigned)__atomic_load_n(&s_frame_draws, __ATOMIC_RELAXED));
+diff --git a/src/video/video_player.h b/src/video/video_player.h
+index a5b912c..391e2ae 100644
+--- a/src/video/video_player.h
++++ b/src/video/video_player.h
+@@ -63,10 +63,14 @@ void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch);
+ /* Rows per displayed row: 2 for a 2x2 anti-aliased surface, else 1. */
+ void xbox_FramebufferWindowSetAA(uint32_t sy);
+ int  xbox_FramebufferDumpBmp(const char *path);
+-/* Title bar: "<XBE title> | FPS: n | draws: n". The name is the certificate's
+- * UTF-16 title (40 chars max); the stats come from each flip. */
++/* Title bar: "<XBE title> | WxH | FPS: n | draws: n". The name is the
++ * certificate's UTF-16 title (40 chars max); the stats come from each flip.
++ * WxH is the presented frame's rendering resolution before anti-aliasing
++ * scale (640x480 for a 1280x480 2x1 surface), set by the pushbuffer executor
++ * at each flip; it is left out until the first one. */
+ void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars);
+ void xbox_FramebufferWindowFrameStats(uint32_t draws);
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h);
+ 
+ #if !defined(_WIN32)
+ /* POSIX hosts: the framebuffer window needs the process main thread (AppKit
+diff --git a/tests/nv2a_ffp_backend/nv2a_ffp_backend_test.c b/tests/nv2a_ffp_backend/nv2a_ffp_backend_test.c
+index 88c69ee..924cdc1 100644
+--- a/tests/nv2a_ffp_backend/nv2a_ffp_backend_test.c
++++ b/tests/nv2a_ffp_backend/nv2a_ffp_backend_test.c
+@@ -38,6 +38,7 @@ uint32_t xbox_Nv2aFenceWordVa(void) { return s_fence_va; }
+ int nv2a_pb_dma_walk(void) { return 1; }             /* RECOMP_PB_WALK=dma: 0x0310 is latched */
+ void xbox_FramebufferWindowStart(void) {}
+ void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h) { (void)w; (void)h; }
+ void xbox_FramebufferWindowPresent(uint32_t va, uint32_t pitch) { (void)va; (void)pitch; }
+ void xbox_Nv2aFrameCounterFlip(void) {}
+ /* The flip hold (nv2a_flip_hold.c, linked in). No vblank moves here, so the
+diff --git a/tests/nv2a_ffp_backend/nv2a_present_sync_test.c b/tests/nv2a_ffp_backend/nv2a_present_sync_test.c
+index 6aca6dc..8450cdb 100644
+--- a/tests/nv2a_ffp_backend/nv2a_present_sync_test.c
++++ b/tests/nv2a_ffp_backend/nv2a_present_sync_test.c
+@@ -34,6 +34,7 @@ uint32_t xbox_Nv2aFenceWordVa(void) { return 0; }
+ int nv2a_pb_dma_walk(void) { return 1; }
+ void xbox_FramebufferWindowStart(void) {}
+ void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h) { (void)w; (void)h; }
+ void xbox_Nv2aFrameCounterFlip(void) {}
+ int nv2a_pb_scan_in_call(void) { return 0; }
+ uint32_t xbox_VblankCount(void) { return 0; }
+diff --git a/tests/nv2a_pb_constants/nv2a_pb_constants_test.c b/tests/nv2a_pb_constants/nv2a_pb_constants_test.c
+index 8c08104..132b9fa 100644
+--- a/tests/nv2a_pb_constants/nv2a_pb_constants_test.c
++++ b/tests/nv2a_pb_constants/nv2a_pb_constants_test.c
+@@ -32,6 +32,7 @@ uint32_t xbox_Nv2aFenceWordVa(void) { return s_fence_va; }
+ int nv2a_pb_dma_walk(void) { return 1; }             /* RECOMP_PB_WALK=dma: 0x0310 is latched */
+ void xbox_FramebufferWindowStart(void) {}
+ void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h) { (void)w; (void)h; }
+ void xbox_FramebufferWindowPresent(uint32_t va, uint32_t pitch) { (void)va; (void)pitch; }
+ void xbox_Nv2aFrameCounterFlip(void) {}
+ /* The flip hold (nv2a_flip_hold.c, linked in). No vblank moves here, so the
+diff --git a/tests/nv2a_raster_batch/nv2a_raster_batch_test.c b/tests/nv2a_raster_batch/nv2a_raster_batch_test.c
+index 699a975..b03467e 100644
+--- a/tests/nv2a_raster_batch/nv2a_raster_batch_test.c
++++ b/tests/nv2a_raster_batch/nv2a_raster_batch_test.c
+@@ -49,6 +49,7 @@ uint32_t xbox_Nv2aFenceWordVa(void) { return 0; }
+ int nv2a_pb_dma_walk(void) { return 1; }
+ void xbox_FramebufferWindowStart(void) {}
+ void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h) { (void)w; (void)h; }
+ void xbox_FramebufferWindowPresent(uint32_t va, uint32_t pitch) { (void)va; (void)pitch; }
+ void xbox_Nv2aFrameCounterFlip(void) {}
+ /* The flip hold (#192, nv2a_flip_hold.c, linked in): no vblank moves here,
+diff --git a/tests/nv2a_tex_filter/nv2a_tex_filter_test.c b/tests/nv2a_tex_filter/nv2a_tex_filter_test.c
+index 5a01c4a..cd10aa9 100644
+--- a/tests/nv2a_tex_filter/nv2a_tex_filter_test.c
++++ b/tests/nv2a_tex_filter/nv2a_tex_filter_test.c
+@@ -52,6 +52,7 @@ uint32_t xbox_Nv2aFenceWordVa(void) { return 0; }
+ int nv2a_pb_dma_walk(void) { return 1; }
+ void xbox_FramebufferWindowStart(void) {}
+ void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
++void xbox_FramebufferWindowSetResolution(uint32_t w, uint32_t h) { (void)w; (void)h; }
+ void xbox_FramebufferWindowPresent(uint32_t va, uint32_t pitch) { (void)va; (void)pitch; }
+ void xbox_Nv2aFrameCounterFlip(void) {}
+ int nv2a_pb_scan_in_call(void) { return 0; }
+diff --git a/tests/apu_voice_list/CMakeLists.txt b/tests/apu_voice_list/CMakeLists.txt
+new file mode 100644
+index 0000000..018e726
+--- /dev/null
++++ b/tests/apu_voice_list/CMakeLists.txt
+@@ -0,0 +1,21 @@
++cmake_minimum_required(VERSION 3.20)
++project(apu_voice_list_test C)
++# test_main.c compiles apu_vp.c itself, to run a frame on a hand-built voice
++# list, and stands in for the little it uses from the rest of the APU (as
++# tests/apu_vp does). AddressSanitizer turns an out-of-range voice handle's
++# write into a hard failure. POSIX only: it links the platform layer for the
++# Interlocked* calls; tests/apu_vp covers Windows.
++if(WIN32)
++    message(FATAL_ERROR "POSIX test; tests/apu_vp covers Windows")
++endif()
++set(CMAKE_C_STANDARD 11)
++add_subdirectory(../.. runtime)
++add_executable(apu_voice_list_test test_main.c)
++target_include_directories(apu_voice_list_test PRIVATE
++    ../../src ../../src/apu ../../src/platform)
++target_compile_options(apu_voice_list_test PRIVATE
++    -fsanitize=address -fno-omit-frame-pointer)
++target_link_options(apu_voice_list_test PRIVATE -fsanitize=address)
++target_link_libraries(apu_voice_list_test PRIVATE platform m)
++enable_testing()
++add_test(NAME apu_voice_list COMMAND apu_voice_list_test)
+diff --git a/tests/apu_voice_list/test_main.c b/tests/apu_voice_list/test_main.c
+new file mode 100644
+index 0000000..00d0306
+--- /dev/null
++++ b/tests/apu_voice_list/test_main.c
+@@ -0,0 +1,162 @@
++/* The voice processor's list walk, against a small fake guest RAM.
++ *
++ * apu_vp.c is compiled into this file (as tests/apu_vp does) so a frame can
++ * be run on a hand-built voice list. The check fails on the code it was
++ * written for: mcpx_apu_vp_frame bounded the *number* of voices it walked
++ * but not the handle, and voice_process's `assert(v < MCPX_HW_MAX_VOICES)` is
++ * compiled out in a release build. A list naming handle 0x0400 then indexed
++ * g_dbg.vp.v[], d->vp.voice_spin[] and the resampler state 1024 voices into
++ * 256-entry tables -- Tony Hawk's Underground segfaulted the VP thread that
++ * way while reloading sound for its main menu.
++ *
++ * Built with AddressSanitizer, so the out-of-bounds write is a hard failure
++ * as well as the observable checks below. POSIX: tests/apu_vp covers the
++ * same file on Windows. */
++#include "../../src/apu/apu_vp.c"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Symbols the VP takes from the rest of the APU (as in tests/apu_vp). */
++MCPXAPUState *g_state;
++struct McpxApuDebug g_dbg, g_dbg_cache;
++int g_dbg_voice_monitor = -1;
++uint64_t g_dbg_muted_voices[4];
++uint8_t *g_apu_ram_ptr;
++
++#define RAM_SIZE   0x100000u
++#define VOICE_BASE 0x10000u   /* NV_PAPU_VPVADDR */
++
++static uint8_t *s_ram;
++static int s_failures;
++
++uint8_t *mcpx_apu_phys(uint64_t addr)
++{
++    if (addr >= RAM_SIZE) {
++        fprintf(stderr, "FAIL: guest access at 0x%llX is outside the fake RAM\n",
++                (unsigned long long)addr);
++        exit(1);
++    }
++    return s_ram + addr;
++}
++
++const char *mcpx_apu_phys_class(uint64_t addr) { (void)addr; return "fake"; }
++int apu_env_on(const char *name) { (void)name; return 0; }
++ApuIrqStats apu_irq_stats;
++
++#define CHECK(cond, ...) do { if (!(cond)) { \
++    fprintf(stderr, "FAIL line %d: ", __LINE__); \
++    fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); s_failures++; } } while (0)
++
++static void set_voice_reg(uint16_t v, uint32_t reg, uint32_t value)
++{
++    memcpy(s_ram + VOICE_BASE + (uint32_t)v * NV_PAVS_SIZE + reg, &value, 4);
++}
++
++static uint32_t get_voice_reg(uint16_t v, uint32_t reg)
++{
++    uint32_t value;
++    memcpy(&value, s_ram + VOICE_BASE + (uint32_t)v * NV_PAVS_SIZE + reg, 4);
++    return value;
++}
++
++/* A voice that would be processed if reached: active, paused (so
++ * voice_process stops right after touching g_dbg), linked to `next`. */
++static void make_voice(uint16_t v, uint16_t next)
++{
++    set_voice_reg(v, NV_PAVS_VOICE_PAR_STATE,
++                  NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE
++                  | NV_PAVS_VOICE_PAR_STATE_PAUSED);
++    set_voice_reg(v, NV_PAVS_VOICE_TAR_PITCH_LINK, next);
++}
++
++static void reset(MCPXAPUState *d)
++{
++    memset(s_ram, 0, RAM_SIZE);
++    memset(d, 0, sizeof(*d));
++    memset(&g_dbg, 0, sizeof(g_dbg));
++    d->regs[NV_PAPU_VPVADDR] = VOICE_BASE;
++    /* Every list empty unless a case says otherwise. */
++    d->regs[NV_PAPU_TVL2D] = 0xFFFF;
++    d->regs[NV_PAPU_TVL3D] = 0xFFFF;
++    d->regs[NV_PAPU_TVLMP] = 0xFFFF;
++}
++
++/* A list whose head is out of range: nothing is walked or processed. */
++static void bad_head_ends_the_list(void)
++{
++    static MCPXAPUState d;
++    static float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
++    const uint16_t bad = 0x0400;
++    uint32_t before;
++
++    reset(&d);
++    make_voice(bad, 0xFFFF);          /* inside the fake RAM, outside 0..255 */
++    before = get_voice_reg(bad, NV_PAVS_VOICE_PAR_STATE);
++    d.regs[NV_PAPU_TVL2D] = bad;
++
++    mcpx_apu_vp_frame(&d, mixbins);
++
++    CHECK(get_voice_reg(bad, NV_PAVS_VOICE_PAR_STATE) == before,
++          "voice 0x%04X was processed", bad);
++    CHECK(d.vp.voice_spin[MCPX_HW_MAX_VOICES - 1] == 0,
++          "voice lock table touched");
++}
++
++/* A valid voice whose link is out of range: the valid one is still walked
++ * (and recorded in g_dbg), the list stops at the bad link. */
++static void bad_link_ends_the_list(void)
++{
++    static MCPXAPUState d;
++    static float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
++
++    reset(&d);
++    make_voice(7, 0x0300);
++    make_voice(0x0300, 0xFFFF);
++    d.regs[NV_PAPU_TVL2D] = 7;
++
++    mcpx_apu_vp_frame(&d, mixbins);
++
++    CHECK(g_dbg.vp.v[7].active, "valid voice 7 was not walked");
++    CHECK(d.regs[NV_PAPU_CVL2D] == 0x0300,
++          "walk did not stop at the bad link (current 0x%X)",
++          (unsigned)d.regs[NV_PAPU_CVL2D]);
++}
++
++/* The terminator alone is still an empty list, and a normal two-voice list
++ * walks both. */
++static void good_lists_still_walk(void)
++{
++    static MCPXAPUState d;
++    static float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
++
++    reset(&d);
++    make_voice(3, 200);
++    make_voice(200, 0xFFFF);
++    d.regs[NV_PAPU_TVL3D] = 3;
++
++    mcpx_apu_vp_frame(&d, mixbins);
++
++    CHECK(g_dbg.vp.v[3].active && g_dbg.vp.v[200].active,
++          "a valid two-voice list was not walked to its end");
++    CHECK(d.regs[NV_PAPU_CVL3D] == 0xFFFF, "list did not end at 0xFFFF");
++}
++
++int main(void)
++{
++    s_ram = (uint8_t *)calloc(1, RAM_SIZE);
++    if (!s_ram) return 2;
++
++    good_lists_still_walk();
++    bad_head_ends_the_list();
++    bad_link_ends_the_list();
++
++    free(s_ram);
++    if (s_failures) {
++        fprintf(stderr, "%d check(s) failed\n", s_failures);
++        return 1;
++    }
++    puts("PASS: voice lists end at an out-of-range handle; valid lists walk.");
++    return 0;
++}
+diff --git a/tests/fb_present_sdl/CMakeLists.txt b/tests/fb_present_sdl/CMakeLists.txt
+new file mode 100644
+index 0000000..9363aa7
+--- /dev/null
++++ b/tests/fb_present_sdl/CMakeLists.txt
+@@ -0,0 +1,22 @@
++cmake_minimum_required(VERSION 3.20)
++project(fb_present_sdl_test C)
++# The SDL framebuffer presenter, compiled directly into the test (the way
++# tests/fb_present does the GDI one). It never opens a window, so no display
++# is needed -- only the SDL2 headers and library the presenter includes.
++if(WIN32)
++    message(FATAL_ERROR "fb_present_sdl.c is the POSIX presenter")
++endif()
++set(CMAKE_C_STANDARD 11)
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
++find_package(Threads REQUIRED)
++add_executable(fb_present_sdl_test test_main.c)
++target_include_directories(fb_present_sdl_test PRIVATE
++    ../../src
++    ../../src/input
++    ../../src/platform
++    ../../src/video
++)
++target_link_libraries(fb_present_sdl_test PRIVATE PkgConfig::SDL2 Threads::Threads)
++enable_testing()
++add_test(NAME fb_present_sdl COMMAND fb_present_sdl_test)
+diff --git a/tests/fb_present_sdl/test_main.c b/tests/fb_present_sdl/test_main.c
+new file mode 100644
+index 0000000..11add3c
+--- /dev/null
++++ b/tests/fb_present_sdl/test_main.c
+@@ -0,0 +1,132 @@
++/*
++ * fb_present_sdl - does the POSIX framebuffer window publish what the
++ * pushbuffer executor hands it at a flip, for every surface shape it can be
++ * handed: 32-bit, 16-bit, and the 2x-wide anti-aliased 32-bit surface (pitch
++ * 640 * 8), at vertical factor 1 (2x1) and 2 (2x2).
++ *
++ * The 2x-wide case is the one that matters: the presenter used to reject a
++ * pitch / 640 of 8, so a title rendering multisampled -- Tony Hawk's
++ * Underground, 1280x480 -- never published a frame and the window stayed
++ * black while the executor drew correctly. fb_present.c (GDI) already took
++ * every other pixel; this checks the SDL twin does the same.
++ *
++ * Exercises present_copy() through xbox_FramebufferWindowPresent without
++ * opening a window: s_running is set by hand and the published slot is read
++ * back directly. No display is needed.
++ */
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define xbox_GetMemoryOffset present_test_memory_offset
++#include "../../src/video/fb_present_sdl.c"
++#undef xbox_GetMemoryOffset
++
++#define FRAME_VA     0x1000u
++#define FRAME_PIXELS (640u * 480u)
++
++static uint8_t *guest;
++static int failures;
++
++ptrdiff_t present_test_memory_offset(void) { return (ptrdiff_t)guest; }
++
++/* The input layer the window loop drives; never reached here. */
++void xbox_InputSdlInit(void) {}
++void xbox_InputSdlEvent(const SDL_Event *ev) { (void)ev; }
++void xbox_InputSetMainPump(int on) { (void)on; }
++int  xbox_InputAnyOpen(void) { return 0; }
++
++#define CHECK(name, cond) \
++    do { if (!(cond)) { printf("FAIL: %s\n", name); failures++; } } while (0)
++
++/* The frame most recently published: the ready slot. */
++static const struct fb_slot *ready(void) { return &s_slot[s_ready]; }
++
++static int ready_is32(uint32_t value)
++{
++    const uint32_t *p = (const uint32_t *)ready()->px;
++    size_t i;
++    if (!p || ready()->bpp != 4)
++        return 0;
++    for (i = 0; i < FRAME_PIXELS; i++)
++        if (p[i] != value)
++            return 0;
++    return 1;
++}
++
++int main(void)
++{
++    uint32_t *g32;
++    uint16_t *g16;
++    uint64_t seq;
++    size_t i;
++
++    /* Room for the largest surface: 2x2 AA, 1280x960 at 4 bytes. */
++    guest = calloc(1, FRAME_VA + 1280u * 960u * 4u);
++    if (!guest)
++        return 1;
++    g32 = (uint32_t *)(guest + FRAME_VA);
++    g16 = (uint16_t *)(guest + FRAME_VA);
++    s_running = 1;
++
++    /* 1. 32-bit, 640 wide. */
++    for (i = 0; i < FRAME_PIXELS; i++)
++        g32[i] = 0x00112233u;
++    seq = s_ready_seq;
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 4u);
++    CHECK("32-bit frame published", s_ready_seq == seq + 1);
++    CHECK("32-bit frame content", ready_is32(0x00112233u));
++
++    /* 2. 16-bit: published at 2 bytes per pixel, unconverted (SDL takes
++     *    RGB565 directly). */
++    for (i = 0; i < FRAME_PIXELS; i++)
++        g16[i] = 0xF800u;
++    seq = s_ready_seq;
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 2u);
++    CHECK("16-bit frame published", s_ready_seq == seq + 1);
++    CHECK("16-bit frame is 2 bpp", ready()->bpp == 2
++          && ((const uint16_t *)ready()->px)[0] == 0xF800u
++          && ((const uint16_t *)ready()->px)[FRAME_PIXELS - 1] == 0xF800u);
++
++    /* 3. 2x1 anti-aliased, 1280x480: even columns carry the picture. */
++    for (i = 0; i < 1280u * 480u; i++)
++        g32[i] = (i % 2u == 0) ? 0x00010203u : 0x00AABBCCu;
++    seq = s_ready_seq;
++    xbox_FramebufferWindowSetAA(1);
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 8u);
++    CHECK("2x1 AA frame published (was dropped: pitch/640 == 8)",
++          s_ready_seq == seq + 1);
++    CHECK("2x1 AA frame takes every other pixel", ready_is32(0x00010203u));
++
++    /* 4. 2x2 anti-aliased, 1280x960: even rows of even columns. */
++    for (i = 0; i < 1280u * 960u; i++)
++        g32[i] = ((i / 1280u) % 2u == 0 && i % 2u == 0)
++                     ? 0x00040506u : 0x00DDEEFFu;
++    seq = s_ready_seq;
++    xbox_FramebufferWindowSetAA(2);
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 8u);
++    xbox_FramebufferWindowSetAA(1);
++    CHECK("2x2 AA frame published", s_ready_seq == seq + 1);
++    CHECK("2x2 AA frame steps rows by 2", ready_is32(0x00040506u));
++
++    /* 5. A pitch that is none of the shapes is still refused, not guessed. */
++    seq = s_ready_seq;
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 3u);
++    CHECK("unknown pitch not published", s_ready_seq == seq);
++
++    /* 6. No window: nothing is published. */
++    s_running = 0;
++    seq = s_ready_seq;
++    xbox_FramebufferWindowPresent(FRAME_VA, 640u * 4u);
++    CHECK("closed window publishes nothing", s_ready_seq == seq);
++
++    free(guest);
++    if (failures) {
++        printf("%d failure(s)\n", failures);
++        return 1;
++    }
++    printf("fb_present_sdl: all checks passed\n");
++    return 0;
++}
+diff --git a/tests/mmio_decode_x86_64/CMakeLists.txt b/tests/mmio_decode_x86_64/CMakeLists.txt
+new file mode 100644
+index 0000000..dce3ffc
+--- /dev/null
++++ b/tests/mmio_decode_x86_64/CMakeLists.txt
+@@ -0,0 +1,11 @@
++cmake_minimum_required(VERSION 3.20)
++project(mmio_decode_x86_64_test C)
++set(CMAKE_C_STANDARD 11)
++# Header-only decoder: no runtime to build, just the include path. The test
++# faults for real (PROT_NONE page + sigaction), so it needs an x86-64 Linux
++# host; elsewhere it exits 77 (skipped).
++add_executable(mmio_decode_x86_64_test test_main.c)
++target_include_directories(mmio_decode_x86_64_test PRIVATE ../../src/platform)
++enable_testing()
++add_test(NAME mmio_decode_x86_64 COMMAND mmio_decode_x86_64_test)
++set_tests_properties(mmio_decode_x86_64 PROPERTIES SKIP_RETURN_CODE 77)
+diff --git a/tests/mmio_decode_x86_64/test_main.c b/tests/mmio_decode_x86_64/test_main.c
+new file mode 100644
+index 0000000..9c551c3
+--- /dev/null
++++ b/tests/mmio_decode_x86_64/test_main.c
+@@ -0,0 +1,231 @@
++/*
++ * mmio_decode_x86_64 - does the x86-64 trapped-MMIO decoder service the
++ * instructions clang emits against a device register, through a real fault:
++ * a PROT_NONE page, SIGSEGV, the ucontext, and a resume past the instruction.
++ *
++ * The ALU and TEST forms are the point. A lifted `MEM32(reg) & imm` compiles
++ * to `test dword [mem], imm32`, and the branch after it reads the flags the
++ * decoder wrote into the saved RFLAGS -- so a decoder that services the read
++ * but leaves ZF stale is silently wrong, and one that does not know the form
++ * crashes. XDK DirectSound polls the APU exactly that way (Tony Hawk's
++ * Underground: F7 84 03 F0 1F FE FF 18 00 00 00).
++ *
++ * Skips (exit 77) on hosts that are not x86-64 Linux.
++ */
++#include <stdio.h>
++#include <stdint.h>
++#include <string.h>
++#include <stdlib.h>
++
++#if defined(__x86_64__) && defined(__linux__)
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE 1
++#endif
++#include <signal.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include "mmio_decode_x86_64.h"
++
++static int failures;
++#define CHECK_U64(name, got, want) \
++    do { uint64_t g_=(uint64_t)(got), w_=(uint64_t)(want); \
++         if (g_ != w_) { printf("FAIL: %s (got 0x%llX, want 0x%llX)\n", name, \
++                   (unsigned long long)g_, (unsigned long long)w_); failures++; } } while (0)
++
++#define WIN 0x8000u
++static uint8_t *win;                 /* PROT_NONE */
++static uint8_t model[WIN];           /* the device behind it */
++static int traps, unknown, reads, writes;
++
++static uint64_t rd(void *d, uint32_t off, int size)
++{ uint64_t v = 0; reads++; memcpy(&v, (uint8_t *)d + off, size); return v; }
++static void wr(void *d, uint32_t off, uint64_t v, int size)
++{ writes++; memcpy((uint8_t *)d + off, &v, size); }
++
++static void handler(int sig, siginfo_t *si, void *ucv)
++{
++    uintptr_t f = (uintptr_t)si->si_addr;
++
++    if (f >= (uintptr_t)win && f < (uintptr_t)win + WIN) {
++        traps++;
++        if (mmio_emulate_x86_64((ucontext_t *)ucv,
++                                (uint32_t)(f - (uintptr_t)win), model, rd, wr))
++            return;
++        unknown++;
++    }
++    /* An undecoded form cannot be stepped safely without its length: die
++     * with a message naming the case rather than looping on the fault. */
++    printf("FAIL: undecoded fault at %p -- aborting\n", (void *)f);
++    fflush(stdout);
++    _exit(1);
++}
++
++static void set32(uint32_t off, uint32_t v) { memcpy(model + off, &v, 4); }
++static uint32_t get32(uint32_t off) { uint32_t v; memcpy(&v, model + off, 4); return v; }
++
++static void reset_counts(void) { reads = writes = 0; }
++
++int main(void)
++{
++    struct sigaction sa;
++    unsigned char z, c, s, o;
++    uint32_t r32;
++
++    win = mmap(NULL, WIN, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (win == MAP_FAILED) { perror("mmap"); return 1; }
++
++    memset(&sa, 0, sizeof sa);
++    sa.sa_sigaction = handler;
++    sa.sa_flags = SA_SIGINFO;
++    sigemptyset(&sa.sa_mask);
++    sigaction(SIGSEGV, &sa, NULL);
++    sigaction(SIGBUS, &sa, NULL);
++
++    /* 1. THUG's exact instruction: test dword [rbx+rax*1-0x1E010], 0x18.
++     *    The encoding needs base=rbx, index=rax, disp32, imm32. */
++    {
++        uintptr_t base = (uintptr_t)win + 0x2000 + 0x1E010;
++        uintptr_t index = 0;
++
++        set32(0x2000, 0x10);                         /* bit 4 set: ZF=0 */
++        reset_counts();
++        __asm__ volatile(".byte 0xF7, 0x84, 0x03, 0xF0, 0x1F, 0xFE, 0xFF, 0x18, 0x00, 0x00, 0x00\n\t"
++                         "setz %0"
++                         : "=r"(z) : "b"(base), "a"(index) : "cc", "memory");
++        CHECK_U64("THUG test [rbx+rax-0x1E010],0x18: ZF clear", z, 0);
++        CHECK_U64("THUG test: one read, no write", (uint64_t)reads << 8 | writes, 1u << 8);
++
++        set32(0x2000, 0x01);                         /* no bit 3/4: ZF=1 */
++        __asm__ volatile(".byte 0xF7, 0x84, 0x03, 0xF0, 0x1F, 0xFE, 0xFF, 0x18, 0x00, 0x00, 0x00\n\t"
++                         "setz %0"
++                         : "=r"(z) : "b"(base), "a"(index) : "cc", "memory");
++        CHECK_U64("THUG test: ZF set", z, 1);
++    }
++
++    /* 2. test byte [mem], imm8 (F6 /0) */
++    {
++        uint8_t *p = win + 0x100;
++
++        model[0x100] = 0x80;
++        __asm__ volatile("testb $0x80, (%2)\n\tsetz %0\n\tsets %1"
++                         : "=r"(z), "=r"(s) : "r"(p) : "cc", "memory");
++        CHECK_U64("test byte imm8: ZF", z, 0);
++        CHECK_U64("test byte imm8: SF", s, 1);
++    }
++
++    /* 3. test [mem], reg (85) */
++    {
++        uint32_t mask = 0x00F0;
++        uint8_t *p = win + 0x200;
++
++        set32(0x200, 0x0F0F);
++        __asm__ volatile("testl %2, (%1)\n\tsetz %0"
++                         : "=r"(z) : "r"(p), "r"(mask) : "cc", "memory");
++        CHECK_U64("test [mem],reg: ZF", z, 1);
++    }
++
++    /* 4. cmp dword [mem], imm8 (83 /7): 5 - 7 borrows (CF) and is negative. */
++    {
++        uint8_t *p = win + 0x300;
++
++        set32(0x300, 5);
++        reset_counts();
++        __asm__ volatile("cmpl $7, (%2)\n\tsetb %0\n\tsetz %1"
++                         : "=r"(c), "=r"(z) : "r"(p) : "cc", "memory");
++        CHECK_U64("cmp [mem],imm8: CF", c, 1);
++        CHECK_U64("cmp [mem],imm8: ZF", z, 0);
++        CHECK_U64("cmp: one read, no write", (uint64_t)reads << 8 | writes, 1u << 8);
++        CHECK_U64("cmp leaves the register", get32(0x300), 5);
++    }
++
++    /* 5. cmp signed overflow: 0x80000000 - 1 sets OF, clears SF. */
++    {
++        uint8_t *p = win + 0x310;
++
++        set32(0x310, 0x80000000u);
++        __asm__ volatile("cmpl $1, (%2)\n\tseto %0\n\tsets %1"
++                         : "=r"(o), "=r"(s) : "r"(p) : "cc", "memory");
++        CHECK_U64("cmp INT_MIN,1: OF", o, 1);
++        CHECK_U64("cmp INT_MIN,1: SF", s, 0);
++    }
++
++    /* 6. or dword [mem], imm32 (81 /1): read-modify-write. */
++    {
++        uint8_t *p = win + 0x400;
++
++        set32(0x400, 0x0000F000);
++        reset_counts();
++        __asm__ volatile("orl $0x12340000, (%0)" :: "r"(p) : "cc", "memory");
++        CHECK_U64("or [mem],imm32", get32(0x400), 0x1234F000);
++        CHECK_U64("or: one read, one write", (uint64_t)reads << 8 | writes, 1u << 8 | 1);
++    }
++
++    /* 7. and eax, [mem] (23): register destination. */
++    {
++        uint8_t *p = win + 0x500;
++
++        r32 = 0xFFFF00FF;
++        set32(0x500, 0x0F0F0F0F);
++        __asm__ volatile("andl (%1), %0" : "+r"(r32) : "r"(p) : "cc", "memory");
++        CHECK_U64("and reg,[mem]", r32, 0x0F0F000F);
++    }
++
++    /* 8. add [mem], reg (01) with carry out. */
++    {
++        uint8_t *p = win + 0x600;
++        uint32_t one = 1;
++
++        set32(0x600, 0xFFFFFFFFu);
++        __asm__ volatile("addl %2, (%1)\n\tsetc %0"
++                         : "=r"(c) : "r"(p), "r"(one) : "cc", "memory");
++        CHECK_U64("add [mem],reg: result", get32(0x600), 0);
++        CHECK_U64("add [mem],reg: CF", c, 1);
++    }
++
++    /* 9. sub reg, [mem] (2B) keeps the upper half zeroed (32-bit write). */
++    {
++        uint8_t *p = win + 0x700;
++        uint64_t r64 = 0xDEADBEEF00000010ull;
++
++        set32(0x700, 0x4);
++        __asm__ volatile("subl (%1), %k0" : "+r"(r64) : "r"(p) : "cc", "memory");
++        CHECK_U64("sub reg32,[mem] zero-extends", r64, 0xC);
++    }
++
++    /* 10. xor byte [mem], imm8 (80 /6). */
++    model[0x800] = 0xAA;
++    {
++        uint8_t *p = win + 0x800;
++        __asm__ volatile("xorb $0xFF, (%0)" :: "r"(p) : "cc", "memory");
++    }
++    CHECK_U64("xor byte [mem],imm8", model[0x800], 0x55);
++
++    /* 11. The existing MOV path still works: load and store. */
++    {
++        uint8_t *p = win + 0x900;
++
++        set32(0x900, 0xCAFEF00D);
++        __asm__ volatile("movl (%1), %0" : "=r"(r32) : "r"(p) : "memory");
++        CHECK_U64("mov load", r32, 0xCAFEF00D);
++        r32 = 0x12345678;
++        __asm__ volatile("movl %0, 4(%1)" :: "r"(r32), "r"(p) : "memory");
++        CHECK_U64("mov store", get32(0x904), 0x12345678);
++    }
++
++    CHECK_U64("no undecoded traps", unknown, 0);
++
++    if (failures) {
++        printf("%d failure(s), %d trap(s)\n", failures, traps);
++        return 1;
++    }
++    printf("mmio_decode_x86_64: all checks passed (%d traps)\n", traps);
++    return 0;
++}
++
++#else
++int main(void)
++{
++    printf("mmio_decode_x86_64: skipped (not x86-64 Linux)\n");
++    return 77;
++}
++#endif
