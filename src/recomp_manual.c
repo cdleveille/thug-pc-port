@@ -141,6 +141,61 @@ void sub_00173F80(void)
     g_esp += 4;                     /* `ret` */
 }
 
+/* The screen's aspect and the camera's field of view, as the engine hands
+ * them out (Neversoft's Nx screen settings).
+ *
+ * The script command SetScreen (sub_00117740) stores the aspect at 0x2B33DC
+ * (sub_0008F820) and, from its angle, the ratio tan(angle/2) /
+ * tan(base/2) at 0x229C2C (sub_0008FB50; the base, camera_fov, is 72). Every
+ * reader goes through these two getters: the viewport's aspect
+ * (sub_0008FDA0), the screen-to-3D helper (sub_000C5960), and the cameras'
+ * field of view (sub_0009ADA0 and its siblings, which cache the result in
+ * the camera at +0xA4 when its FOV is set). The scripts know two shapes:
+ * standard (1.33333, angle 72) and widescreen or letterbox (1.77778, angle
+ * 88.18, which is Hor+: the same vertical view as 4:3).
+ *
+ * The port offers 16:10 too (aspect_ratio). For any aspect wider than 4:3
+ * the game runs its widescreen mode (main.c sets the dashboard flag), and
+ * these return the chosen aspect and the game's ratio scaled by
+ * chosen / stored aspect, which keeps whatever vertical view the game set:
+ * 16:9 gives exactly the game's own values, 16:10 an 82.2-degree view. At
+ * 4:3 they return the stored values, so the game's letterboxed cutscenes
+ * stay as they were. The aspect is read each call, and in play the cameras
+ * ask for the ratio a few hundred times a second, so a change in the overlay
+ * shows within a frame.
+ *
+ * Originals: cdecl, no arguments, `fld dword [addr]; ret`. */
+static float screen_aspect_chosen(float stored)
+{
+    float a = g_thug_settings.aspect;
+    return thug_aspect_is_wide(a) ? a : stored;
+}
+
+static void fpu_push(double v)
+{
+    g_fp_top = (g_fp_top + 7) & 7;
+    g_fp_stack[g_fp_top] = v;
+}
+
+/* The screen aspect. */
+void sub_0008F830(void)
+{
+    fpu_push(screen_aspect_chosen(MEMF(0x2B33DC)));
+    g_esp += 4;
+}
+
+/* The field-of-view ratio. */
+void sub_0008F860(void)
+{
+    float stored = MEMF(0x2B33DC), ratio = MEMF(0x229C2C);
+    float a = screen_aspect_chosen(stored);
+
+    if (stored > 0.5f && a != stored)
+        ratio *= a / stored;
+    fpu_push(ratio);
+    g_esp += 4;
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*

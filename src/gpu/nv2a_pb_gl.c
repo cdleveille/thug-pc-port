@@ -38,6 +38,8 @@
 
 #include "nv2a_backend.h"
 #include "nv2a_pb_gl.h"
+#include "host/window_icon.h"
+#include "ui/settings.h"           /* [thug] THUG_WINDOW_POS_UNSET */
 #include "../d3d/d3d8_swizzle.h"   /* [thug] swizzled vs linear formats */
 
 #if defined(_WIN32)
@@ -100,6 +102,7 @@ static int msaa_clamp(int n)
 /* [thug] Settings the overlay changes while the game runs. Written by any
  * thread, applied by the executor's thread at the next flip. */
 static volatile float s_req_scale = -1.0f;   /* pending internal scale, <0: none */
+static volatile float s_req_aspect = 0.0f;   /* [thug] pending aspect, 0: none */
 static volatile int   s_req_vsync = -1;      /* pending vsync, -1: none */
 static volatile int   s_fps_limit;           /* 0: off */
 static float          s_native_scale = 1.0f; /* desktop height / 480 */
@@ -1865,6 +1868,51 @@ static void state_env_init(void)
     glUniform1i(u_alphaone, getenv("RECOMP_GL_ALPHA_ONE") != NULL ? 1 : 0);
 }
 
+/* [thug] The XDK's screen-space offset, taken back out. Xbox D3D adds it to
+ * every position it hands the GPU (pre-transformed vertices, and the viewport
+ * offset for transformed ones): 0.5 + 1/32 on a surface without
+ * anti-aliasing, and only the 1/32 bias, in real pixels, on an anti-aliased
+ * one (THUG's 2x-wide buffer: 0.0625, 0.03125). The NV2A snaps positions to
+ * 1/16 pixel and samples pixel centres, so at 640x480 a sprite the title
+ * placed at 0..640 covers pixels 0..639 either way. At a higher internal
+ * resolution the offset is a real shift: the same sprite starts half a
+ * pixel in, its first half-column is never drawn (it keeps whatever the
+ * surface held), and an image drawn through a plain surface lands half a
+ * pixel from the same image drawn into the anti-aliased one. Both showed in
+ * THUG's menu transitions: the scene goes through a 640x480 surface onto the
+ * 2x-wide buffer, and its left edge moved and showed a stale line for the
+ * transition's second. With the offset removed both paths put the title's 0
+ * on the surface's left edge, and full-screen quads cover whole pixels (the
+ * 2x-wide buffer's first column had one MSAA sample of clear colour).
+ * D3D's own resolve into the 640x480 front buffer uses raw positions and so
+ * moves half a pixel; nothing samples that buffer, and it is not the one
+ * presented. THUG_GL_RAW_SCREEN_OFFSET=1 keeps the raw mapping (A/B). */
+static void screen_offset(const Nv2aSurface *s, float *ox, float *oy)
+{
+    static int raw = -1;
+    static uint32_t logged;
+    uint32_t mode;
+
+    if (raw < 0)
+        raw = getenv("THUG_GL_RAW_SCREEN_OFFSET") != NULL;
+    if (raw) {
+        *ox = *oy = 0.0f;
+        return;
+    }
+    if (s->aa_sx <= 1 && s->aa_sy <= 1) {
+        *ox = *oy = 0.53125f;
+    } else {
+        *ox = 0.03125f * (float)s->aa_sx;
+        *oy = 0.03125f * (float)s->aa_sy;
+    }
+    mode = 1u << ((s->aa_sx & 3u) * 4u + (s->aa_sy & 3u));
+    if (!(logged & mode)) {
+        logged |= mode;
+        fprintf(stderr, "[PBGL] screen-space offset %gx%g for %ux%u anti-aliasing removed\n",
+                (double)*ox, (double)*oy, (unsigned)s->aa_sx, (unsigned)s->aa_sy);
+    }
+}
+
 static void apply_state(const Nv2aRenderState *rs, const Nv2aSurface *s,
                         uint32_t frame)
 {
@@ -1898,7 +1946,11 @@ static void apply_state(const Nv2aRenderState *rs, const Nv2aSurface *s,
     /* [thug] The target covers the surface from (0,0) at its logical size. */
     glUniform2f(u_surf, (float)(s_cur ? s_cur->lw : s->width),
                 (float)(s_cur ? s_cur->lh : s->height));
-    glUniform2f(u_origin, 0.0f, 0.0f);
+    {
+        float ox, oy;
+        screen_offset(s, &ox, &oy);
+        glUniform2f(u_origin, ox, oy);
+    }
     glUniform1f(u_incz, 1.0f / (float)z_divisor(rs));
 
     if (rs->blend_enable && !s_no_blend) {
@@ -3324,6 +3376,16 @@ static void apply_requests(void)
                                : "off");
             }
         }
+        if (s_req_aspect > 0.0f) {
+            float a = s_req_aspect;
+            s_req_aspect = 0.0f;
+            if (a != s_aspect) {
+                s_aspect = a;
+                if (sc < 0.0f)
+                    sc = s_scale;     /* re-derive the x scale below */
+                s_scale = -1.0f;      /* ...even at the same height */
+            }
+        }
         if (sc >= 0.0f) {
             s_req_scale = -1.0f;
             if (sc == 0.0f)
@@ -3335,8 +3397,8 @@ static void apply_requests(void)
                 s_scale_y = sc;
                 s_scale_x = sc * s_aspect / (4.0f / 3.0f);
                 realloc_all = 1;
-                fprintf(stderr, "[PBGL] internal scale %.2f (%ux%u)\n", (double)sc,
-                        scaled_x(640), scaled_y(480));
+                fprintf(stderr, "[PBGL] internal scale %.2f (%ux%u, %s)\n", (double)sc,
+                        scaled_x(640), scaled_y(480), thug_aspect_name(s_aspect));
             }
         }
         /* Every target at the new scale and sample count, its contents
@@ -3574,7 +3636,12 @@ void nv2a_pb_gl_drawable_changed(void)
 void nv2a_pb_gl_set_scale(float sc) { s_req_scale = sc < 0.0f ? 0.0f : sc; }
 float nv2a_pb_gl_scale(void) { return s_scale; }
 float nv2a_pb_gl_native_scale(void) { return s_native_scale; }
-float nv2a_pb_gl_aspect(void) { return s_aspect; }
+float nv2a_pb_gl_aspect(void) { return s_req_aspect > 0.0f ? s_req_aspect : s_aspect; }
+void nv2a_pb_gl_set_aspect(float a)
+{
+    if (a >= 1.0f && a <= 3.0f)
+        s_req_aspect = a;
+}
 void nv2a_pb_gl_set_vsync(int on) { s_req_vsync = on ? 1 : 0; }
 int  nv2a_pb_gl_vsync(void) { return s_req_vsync >= 0 ? s_req_vsync : s_vsync; }
 void nv2a_pb_gl_set_fps_limit(int fps) { s_fps_limit = fps > 0 ? fps : 0; }
@@ -3693,6 +3760,7 @@ int nv2a_pb_gl_init(void)
      * `timeout`, which is how every script in tools/ ends a run. Asked for
      * before SDL_Init, as the input layer already does (xinput_device.c). */
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+    thug_window_hints();               /* [thug] app ID, before SDL video */
     /* [thug] Let the driver run its own work on a thread of its own: the
      * executor's thread both decodes the pushbuffer and submits every draw,
      * and the driver's share of that is large (NVIDIA's threaded
@@ -3734,24 +3802,25 @@ int nv2a_pb_gl_init(void)
         if (sc > 8.0f)
             sc = 8.0f;
         s_scale = sc;
-        /* [thug] Widescreen: the title renders anamorphic 16:9 when the
-         * kernel reports the dashboard's widescreen setting (main.c turns
-         * RECOMP_WIDESCREEN on unless THUG_WIDESCREEN=0). */
-        e = getenv("RECOMP_WIDESCREEN");
-        if (e && *e && *e != '0')
-            s_aspect = 16.0f / 9.0f;
+        /* [thug] The picture's shape (aspect_ratio, THUG_ASPECT): the title
+         * renders anamorphic into its 640x480 surfaces, so the x axis gets
+         * the extra resolution. 4:3 when nothing says otherwise. */
+        if (g_thug_settings.aspect >= 1.0f && g_thug_settings.aspect <= 3.0f)
+            s_aspect = g_thug_settings.aspect;
         s_scale_y = sc;
         s_scale_x = sc * s_aspect / (4.0f / 3.0f);
     }
 
     {
         /* [thug] The game's window: visible and resizable unless headless.
-         * Sized to the largest multiple of 640x480 that fits in 80% of the
-         * desktop; THUG_FULLSCREEN=1 (or RECOMP_FULLSCREEN=1) starts it in
-         * borderless fullscreen. */
+         * As the player last left it (THUG_WINDOW_W/_H/_X/_Y/_MAXIMIZED, the
+         * settings file's window_* lines, kept by host_window.c), else sized
+         * to the largest multiple of 640x480 that fits in 85% of the
+         * desktop's height; THUG_FULLSCREEN=1 (or RECOMP_FULLSCREEN=1) starts
+         * it in borderless fullscreen. */
         Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
-        int ww = 640, wh = 480;
-        SDL_Rect ub;
+        int ww = 640, wh = 480, wx = SDL_WINDOWPOS_CENTERED, wy = SDL_WINDOWPOS_CENTERED;
+        SDL_Rect ub = { 0, 0, 0, 0 };
         if (s_visible) {
             flags |= SDL_WINDOW_RESIZABLE;
             /* Window sizes are in the desktop's scaled units (a 4K desktop at
@@ -3767,6 +3836,36 @@ int nv2a_pb_gl_init(void)
                     wh = (int)((float)ww / s_aspect + 0.5f);
                 }
             }
+            {   /* the saved window, within today's desktop */
+                const char *sw = getenv("THUG_WINDOW_W"), *sh = getenv("THUG_WINDOW_H");
+                const char *sx = getenv("THUG_WINDOW_X"), *sy = getenv("THUG_WINDOW_Y");
+                const char *sm = getenv("THUG_WINDOW_MAXIMIZED");
+                int w = sw ? atoi(sw) : 0, h = sh ? atoi(sh) : 0;
+                int x = sx ? atoi(sx) : THUG_WINDOW_POS_UNSET;
+                int y = sy ? atoi(sy) : THUG_WINDOW_POS_UNSET;
+                if (w >= 160 && h >= 120) {
+                    ww = w;
+                    wh = h;
+                    if (ub.w > 0 && ww > ub.w) ww = ub.w;
+                    if (ub.h > 0 && wh > ub.h) wh = ub.h;
+                }
+                if (x != THUG_WINDOW_POS_UNSET && y != THUG_WINDOW_POS_UNSET) {
+                    SDL_Rect all = { 0, 0, 0, 0 }, d;
+                    int i, n = SDL_GetNumVideoDisplays();
+                    for (i = 0; i < n; i++)    /* still on some display? */
+                        if (SDL_GetDisplayBounds(i, &d) == 0) {
+                            SDL_Rect r = { x, y, ww, wh }, hit;
+                            if (SDL_IntersectRect(&r, &d, &hit) && hit.w >= 64 && hit.h >= 64)
+                                all = d;
+                        }
+                    if (all.w > 0) {
+                        wx = x;
+                        wy = y;
+                    }
+                }
+                if (sm && *sm && *sm != '0')
+                    flags |= SDL_WINDOW_MAXIMIZED;
+            }
             e = getenv("THUG_FULLSCREEN");
             if (!e) e = getenv("RECOMP_FULLSCREEN");
             if (e && *e && *e != '0')
@@ -3774,14 +3873,17 @@ int nv2a_pb_gl_init(void)
         } else {
             flags |= SDL_WINDOW_HIDDEN;
         }
-        s_win = SDL_CreateWindow("Tony Hawk's Underground",
-                                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                 ww, wh, flags);
+        s_win = SDL_CreateWindow("Tony Hawk's Underground", wx, wy, ww, wh, flags);
+        if (s_win && s_visible)
+            fprintf(stderr, "[PBGL] window %dx%d%s%s\n", ww, wh,
+                    wx == SDL_WINDOWPOS_CENTERED ? ", placed by the desktop" : ", at the saved position",
+                    (flags & SDL_WINDOW_MAXIMIZED) ? ", maximised" : "");
     }
     if (!s_win) {
         fprintf(stderr, "[PBGL] SDL_CreateWindow: %s\n", SDL_GetError());
         return 0;
     }
+    thug_window_set_icon(s_win);       /* [thug] thug.png: title bar, taskbar */
     s_ctx = SDL_GL_CreateContext(s_win);
     if (!s_ctx) {
         fprintf(stderr, "[PBGL] SDL_GL_CreateContext: %s\n", SDL_GetError());
@@ -3891,11 +3993,11 @@ int nv2a_pb_gl_init(void)
      * guest memory: otherwise the frame never leaves the GPU. */
     nv2a_backend_register_with_present_sync(&s_backend,
                                             s_readback ? gl_present_sync : NULL);
-    fprintf(stderr, "[PBGL] OpenGL %s, %s; internal scale %.2f (%ux%u%s), %s,"
+    fprintf(stderr, "[PBGL] OpenGL %s, %s; internal scale %.2f (%ux%u, %s), %s,"
             " vsync %s%s\n",
             (const char *)glGetString(GL_VERSION),
             (const char *)glGetString(GL_RENDERER), (double)s_scale,
-            scaled_x(640), scaled_y(480), s_aspect > 1.5f ? ", 16:9" : "",
+            scaled_x(640), scaled_y(480), thug_aspect_name(s_aspect),
             s_visible ? "window" : "headless",
             s_vsync ? "on" : "off", s_readback ? ", readback on" : "");
     /* Release it here: GLX lets a context be current on one thread only, and

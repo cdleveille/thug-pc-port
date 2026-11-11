@@ -139,6 +139,20 @@ XBOX_ANALOG_BUTTON_THRESHOLD  30   // Recommended press threshold
 
 The Xbox supports 4 controllers. Each port can have a controller with optional memory units and other accessories. This layer only handles the gamepad; memory unit emulation is not needed for recompiled games.
 
+**Hotplug and threads (SDL).** Without a window loop, the thread that polls
+opens a pad the first time it finds one and closes it when it goes. With one
+(`xbox_InputSetMainPump(1)`, the SDL framebuffer window or a port's own loop),
+only the thread that pumps SDL events opens and closes pads: once in
+`xbox_InputSdlInit`, then on each `SDL_CONTROLLERDEVICEADDED` or `REMOVED`
+that reaches `xbox_InputSdlEvent` (`xbox_InputSdlRefreshControllers`). The
+title's threads only read the pads already open; one that has been pulled
+out reads as disconnected until then. Opening walks SDL's device list by
+index, which the pumping thread rebuilds during a hotplug, and an open from
+another thread at that moment corrupted the heap on sdl2-compat over SDL3.
+A port with its own loop must pass the device events on. Each connect and
+disconnect is logged as `[INPUT] port N: <name> connected` or
+`... disconnected`.
+
 ## Keyboard → Xbox mapping
 
 With `RECOMP_KEYBOARD=1` the keyboard is a pad on port 0, merged on top of a
@@ -201,6 +215,23 @@ As binding text (`xbox_InputMap_BindingsFormat`), the same map is
 `right_thumb = ctrl`, `a = Z` ... `white = Q`, `left_trigger = 1`,
 `left_stick_up = W, Numpad8` and so on: a port that lets the player rebind
 starts from that.
+
+A port can replace the map with its own keys, and switch between sets of
+them as the title's state changes (`keyboard.h`):
+
+- `xbox_InputKeyboardSetBindings(&b)` puts `b` in force in place of the map
+  (`NULL`: the map again).
+- **Layers**, for a key whose meaning follows the game (Escape pauses in play
+  and goes back in the menus): `xbox_InputKeyboardSetLayer(n, &b)` installs
+  up to `XBOX_KEYBOARD_LAYERS` (4) sets, normally before the title polls;
+  `xbox_InputKeyboardUseLayer(n)` chooses the one in force, from any thread
+  at any time (one `int`, no lock), and `xbox_InputKeyboardLayer()` reports
+  it. `SetBindings` is layer 0. An empty layer is the map.
+- Change layers while the keys that change meaning are up. A key held across
+  the change is read under the new layer at once, so the press that opened a
+  menu would also be its new meaning there. A poll reads the layer before
+  the keys, so a press recorded after a change is never read under the old
+  layer.
 
 ## Bindings, remapping and deadzones
 

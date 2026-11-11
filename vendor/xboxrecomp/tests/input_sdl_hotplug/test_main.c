@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* keyboard_sdl.h's, which needs the real SDL_Event. */
+void xbox_InputSdlRefreshControllers(void);
+
 struct SDL_Joystick {
     SDL_JoystickID instance_id;
 };
@@ -58,8 +61,23 @@ int SDL_InitSubSystem(Uint32 flags)
     return 0;
 }
 
+/* Index-based enumeration and opening, and the thread that did them last:
+ * with the main pump on, only the pumping thread may (xinput_device.c). */
+static int s_enum_count;
+static _Atomic int s_enum_off_main;
+static pthread_t s_main_thread;
+static _Atomic int s_pump_on;
+
+static void note_enum(void)
+{
+    s_enum_count++;
+    if (atomic_load(&s_pump_on) && !pthread_equal(pthread_self(), s_main_thread))
+        atomic_fetch_add(&s_enum_off_main, 1);
+}
+
 int SDL_NumJoysticks(void)
 {
+    note_enum();
     return s_device_count;
 }
 
@@ -77,10 +95,16 @@ SDL_GameController *SDL_GameControllerOpen(int joystick_index)
 {
     if (!SDL_IsGameController(joystick_index))
         return NULL;
+    note_enum();
     s_controller.joystick.instance_id = s_device_instance;
     s_controller.attached = 1;
     s_open_count++;
     return &s_controller;
+}
+
+const char *SDL_GameControllerName(SDL_GameController *controller)
+{
+    return controller ? "Fake Pad" : NULL;
 }
 
 void SDL_GameControllerClose(SDL_GameController *controller)
@@ -175,9 +199,13 @@ static void *poll_controller(void *unused)
     return NULL;
 }
 
+/* The pumping thread: devices come and go, and with the main pump on it is
+ * the one that opens and closes them, as the window loop does on SDL's
+ * device events. */
 static void *hotplug_controller(void *unused)
 {
     (void)unused;
+    s_main_thread = pthread_self();
     for (int i = 0; i < 2000; i++) {
         SDL_LockJoysticks();
         if (i & 1) {
@@ -188,8 +216,22 @@ static void *hotplug_controller(void *unused)
             s_device_count = 0;
         }
         SDL_UnlockJoysticks();
-        xbox_InputSetMainPump(i & 1);
+        /* A poll reads the pump flag under the joystick lock, so flipping it
+         * under the lock means no poll is mid-way through a decision made
+         * with the old value when the counting starts. */
+        SDL_LockJoysticks();
+        xbox_InputSetMainPump(1);
+        atomic_store(&s_pump_on, 1);
+        SDL_UnlockJoysticks();
+        xbox_InputSdlRefreshControllers();
+        if (!(i & 2)) {
+            SDL_LockJoysticks();
+            atomic_store(&s_pump_on, 0);
+            xbox_InputSetMainPump(0);
+            SDL_UnlockJoysticks();
+        }
     }
+    atomic_store(&s_pump_on, 0);
     return NULL;
 }
 
@@ -267,31 +309,50 @@ int main(void)
     CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
     CHECK(s_open_count == 2);
 
+    /* The main pump: polls only read the pads already open. A pad pulled
+     * out reads as disconnected but stays for the pumping thread to close;
+     * a pad plugged in is not opened by a poll, only by that thread's
+     * refresh (a hotplug open from a title thread corrupted SDL3's heap). */
     xbox_InputSetMainPump(1);
-    int updates_before = s_update_count;
+    int updates_before = s_update_count, enum_before = s_enum_count;
     s_controller.attached = 0;
     s_device_count = 0;
     CHECK(xbox_InputGetState(0, &state) == ERROR_DEVICE_NOT_CONNECTED);
+    CHECK(!xbox_InputIsConnected(0));
     CHECK(s_update_count == updates_before);
+    CHECK(s_close_count == 1);
+    CHECK(s_enum_count == enum_before);
+    CHECK(!xbox_InputAnyOpen());
+    CHECK(s_close_count == 1);
+    xbox_InputSdlRefreshControllers();
     CHECK(s_close_count == 2);
 
     s_device_count = 1;
     s_device_instance = 12;
-    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
+    enum_before = s_enum_count;
+    CHECK(xbox_InputGetState(0, &state) == ERROR_DEVICE_NOT_CONNECTED);
+    CHECK(xbox_InputGetState(1, &state) == ERROR_DEVICE_NOT_CONNECTED);
+    CHECK(s_open_count == 2);
+    CHECK(s_enum_count == enum_before);
+    xbox_InputSdlRefreshControllers();
     CHECK(s_open_count == 3);
+    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
     CHECK(s_update_count == updates_before);
     CHECK(xbox_InputAnyOpen());
 
-    CHECK(pthread_create(&poll_thread, NULL, poll_controller, NULL) == 0);
     CHECK(pthread_create(&hotplug_thread, NULL, hotplug_controller, NULL) == 0);
+    CHECK(pthread_create(&poll_thread, NULL, poll_controller, NULL) == 0);
     CHECK(pthread_join(poll_thread, NULL) == 0);
     CHECK(pthread_join(hotplug_thread, NULL) == 0);
+    CHECK(atomic_load(&s_enum_off_main) == 0);
 
     SDL_LockJoysticks();
     s_device_count = 1;
     s_device_instance++;
+    s_controller.attached = 0;
     SDL_UnlockJoysticks();
     xbox_InputSetMainPump(1);
+    xbox_InputSdlRefreshControllers();
     CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
     CHECK(atomic_load_explicit(&s_lock_balance, memory_order_relaxed) == 0);
 

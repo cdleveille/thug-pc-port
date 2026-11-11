@@ -43,6 +43,23 @@ target_include_directories(thug-extract PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_target_properties(thug-extract PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# ── The window icon ─────────────────────────────────────────────
+
+# thug.png, embedded as RGBA (SDL2 reads only BMP by itself, and a PNG
+# library is not worth a dependency for one image). Python is already needed
+# for lifting; replacing thug.png is all it takes to change the icon.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(THUG_ICON_SOURCE "${CMAKE_BINARY_DIR}/generated/thug_icon.c")
+add_custom_command(
+    OUTPUT "${THUG_ICON_SOURCE}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+    COMMAND Python3::Interpreter -I "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_icon.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/thug.png" 256 "${THUG_ICON_SOURCE}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/thug.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_icon.py"
+    COMMENT "Embedding thug.png as the window icon"
+    VERBATIM)
+
 # Empty until scripts/regen.sh has run. CONFIGURE_DEPENDS re-globs when the
 # pipeline adds or removes chunks, so a regen never leaves a file out.
 file(GLOB THUG_GEN_SOURCES CONFIGURE_DEPENDS
@@ -58,10 +75,14 @@ add_executable(thug
     src/main.c
     src/recomp_manual.c
     src/gpu/nv2a_pb_gl.c
+    src/host/controls.c
     src/host/game_data.c
     src/host/host_window.c
     src/host/launch.c
+    src/host/restart.c
+    src/host/window_icon.c
     src/ui/settings.c
+    ${THUG_ICON_SOURCE}
     ${THUG_GEN_SOURCES}
 )
 
@@ -75,6 +96,11 @@ target_include_directories(thug PRIVATE
     # GPU renderer (src/gpu) implements.
     ${XBOXRECOMP_DIR}/src/kernel
 )
+
+# The keyboard bindings use the toolkit's input headers (src/input, which
+# reach src/platform): for that one file, so they shadow nothing else.
+set_source_files_properties(src/host/controls.c PROPERTIES
+    INCLUDE_DIRECTORIES "${XBOXRECOMP_DIR}/src")
 
 # GPU renderer: OpenGL 3.3 through SDL2 + libepoxy, as the toolkit's POSIX
 # graphics already use. On Windows the file compiles to a stub for now.

@@ -52,6 +52,7 @@ int SDL_NumJoysticks(void);
 int SDL_IsGameController(int joystick_index);
 SDL_JoystickID SDL_JoystickGetDeviceInstanceID(int joystick_index);
 SDL_GameController *SDL_GameControllerOpen(int joystick_index);
+const char *SDL_GameControllerName(SDL_GameController *gamecontroller);
 void SDL_GameControllerClose(SDL_GameController *controller);
 int SDL_GameControllerGetAttached(SDL_GameController *controller);
 SDL_Joystick *SDL_GameControllerGetJoystick(SDL_GameController *controller);

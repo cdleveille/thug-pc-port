@@ -120,6 +120,9 @@ void xbox_InputSdlInit(void)
      * and on macOS text input lets the press-and-hold accent popover take a
      * held letter (W held to walk would stop walking). */
     SDL_StopTextInput();
+    /* The controllers connected before the window: from here on this thread
+     * opens and closes them, on SDL's device events. */
+    xbox_InputSdlRefreshControllers();
 }
 
 /* RECOMP_KEY_TRACE: each key-down as it arrives, the first 40, the same
@@ -179,6 +182,11 @@ void xbox_InputSdlEvent(const SDL_Event *ev)
         vk = xbox_InputSdlButtonToVk(ev->button.button);
         if (vk)
             xbox_InputKeySet(vk, ev->type == SDL_MOUSEBUTTONDOWN);
+        return;
+    case SDL_CONTROLLERDEVICEADDED:
+    case SDL_CONTROLLERDEVICEREMOVED:
+        /* Hotplug, on the thread that pumps events (keyboard_sdl.h). */
+        xbox_InputSdlRefreshControllers();
         return;
     case SDL_WINDOWEVENT:
         /* SDL sends keys only to the focused window, so there is no focus

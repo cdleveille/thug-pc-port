@@ -53,8 +53,11 @@ shows something, the game's own code put it there.
 | Path | What |
 |---|---|
 | `src/main.c` | Host entry: loads the XBE, maps memory, boots the kernel shim, enters the guest. Crash reporter for both platforms. |
-| `src/host/launch.c` | Start-up: the log file, and the game files (found next to the executable, unpacked from the disc image on first launch with a progress window, refused with a message box when absent or the wrong version) |
+| `src/host/launch.c` | Start-up: the log file, and the game files (found next to the executable, unpacked on first launch with a progress window from a disc image in `game/` or beside the executable (creating `game/`), refused with a message box when absent or the wrong version) |
 | `src/host/game_data.c` | Finding the game directory, the XBE check, the XDVDFS reader and unpacking; no SDL, shared with `thug-extract` |
+| `src/host/restart.c` | The overlay's "Restart to apply changes": the process execs itself (same PID) with the arguments and environment it was started with, its descriptors closed and stdio handed back so the new run sets up its own log |
+| `src/host/controls.c` | The keyboard's menu bindings (Enter/Space A, Backspace/Tab B, WASD/arrows D-pad; Esc START while skating and B in the menus, from the game's current level and `GameIsPaused`), through the toolkit's keyboard layer and its binding layers |
+| `src/host/window_icon.c` | The window icon (`thug.png`, embedded at build time by `scripts/embed_icon.py`) and the app ID `thug-pc-port` |
 | `src/tools/thug_extract.c` | `build/bin/thug-extract`: the same check and unpack as a command, for `scripts/build.sh` (lifting needs `default.xbe` before the game can be built) |
 | `src/recomp_manual.c` | Manual overrides, ICALL failure logging |
 | `src/recomp/gen/` | Generated C (gitignored) |
@@ -159,6 +162,10 @@ shared between targets. Captures log clears and each draw's zeta. The renderer a
 unasked (`[PBGL] bump-env:`).
 The toolkit's fixed-function path generates texture coordinates and applies
 texture matrices; `RECOMP_FFP_RAW_TEXCOORDS=1` turns that off for an A/B.
+The renderer takes the XDK's screen-space offset back out of every position
+(0.53125 on a surface without anti-aliasing, 1/32 pixel per AA factor on an
+anti-aliased one), so the title's 0 is the surface's edge at any internal
+scale; `THUG_GL_RAW_SCREEN_OFFSET=1` keeps the raw positions (A/B).
 `THUG_GL_FLICKER=<dir>` finds one-frame glitches: every presented frame is
 read back (slow; diagnosis only), and a frame unlike both its neighbours is
 saved with its neighbours as PPM, with a `[FLICKER]` line comparing draws,
@@ -172,7 +179,12 @@ brightness pass; the overlay and brightness only exist in the window, so
 check them with a visible run and a screenshot. `THUG_OVERLAY_OPEN=1`
 starts with the F1 overlay open (for screenshots). The player's settings live
 in `~/.config/thug-pc-port/settings.ini` and are loaded by every run, so a
-test that depends on one should set its `THUG_*` variable explicitly. A headless run that needs menu input:
+test that depends on one should set its `THUG_*` variable explicitly. The
+defaults (`src/ui/settings.c`) are 1080 lines (`THUG_RES_SCALE=2.25`), 4x
+MSAA and a 60 fps cap, headless too: a benchmark sets `THUG_FPS_LIMIT=0`, and
+a diagnosis run that wants small dumps sets `THUG_RES_SCALE=1`. A test that
+must not touch the player's files points `XDG_CONFIG_HOME` and
+`XDG_STATE_HOME` at scratch folders. A headless run that needs menu input:
 `RECOMP_PAD_LIVE=<file>`, with one button per appended line. The toolkit's own guides are authoritative:
 `vendor/xboxrecomp/docs/INDEX.md`, especially its "By Symptom" table,
 `docs/pipeline/06-debugging.md` and

@@ -307,11 +307,91 @@ static void test_win32_messages(void)
             CHECK(xbox_InputMap_KeyName(mouse[i].vk) != NULL, "button 0x%02X unnamed", mouse[i].vk);
 }
 
+/* A port's own bindings replace the map, and NULL brings the map back. */
+static void test_custom_bindings(void)
+{
+    InputBindings b = { 0 }, now;
+    XBOX_INPUT_STATE st;
+
+    CHECK(xbox_InputMap_BindingsParse(&b, INPUT_A, "enter, space") == 0, "parse A");
+    CHECK(xbox_InputMap_BindingsParse(&b, INPUT_START, "escape") == 0, "parse start");
+    CHECK(xbox_InputMap_BindingsParse(&b, INPUT_DPAD_UP, "w, up") == 0, "parse up");
+    xbox_InputKeyboardSetBindings(&b);
+    xbox_InputKeyboardBindings(&now);
+    CHECK(memcmp(&now, &b, sizeof b) == 0, "the custom bindings are reported");
+
+    xbox_InputKeysClear();
+    xbox_InputKeySet(XBOX_VK_SPACE, 1);
+    xbox_InputKeySet('W', 1);
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 255, "space is A");
+    CHECK(st.Gamepad.wButtons == XBOX_GAMEPAD_DPAD_UP, "W is d-pad up, buttons 0x%04X",
+          st.Gamepad.wButtons);
+    CHECK(st.Gamepad.sThumbLY == 0, "W no longer moves the stick");
+    xbox_InputKeysClear();
+    xbox_InputKeySet('Z', 1);                       /* the map's A, unbound here */
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 0, "Z is not A any more");
+
+    xbox_InputKeyboardSetBindings(NULL);
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 255, "NULL restores the map (Z is A)");
+    xbox_InputKeysClear();
+}
+
+/* Layers: Escape is START in play (layer 0) and B in the menus (layer 1). */
+static void test_layers(void)
+{
+    InputBindings play = { 0 }, menu = { 0 }, now;
+    XBOX_INPUT_STATE st;
+
+    CHECK(xbox_InputMap_BindingsParse(&play, INPUT_START, "escape") == 0, "parse play");
+    CHECK(xbox_InputMap_BindingsParse(&play, INPUT_B, "backspace") == 0, "parse play B");
+    CHECK(xbox_InputMap_BindingsParse(&menu, INPUT_B, "backspace, escape") == 0, "parse menu");
+    xbox_InputKeyboardSetBindings(&play);
+    xbox_InputKeyboardSetLayer(1, &menu);
+    CHECK(xbox_InputKeyboardLayer() == 0, "SetBindings puts layer 0 in force");
+
+    xbox_InputKeysClear();
+    xbox_InputKeySet(XBOX_VK_ESCAPE, 1);
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.wButtons == XBOX_GAMEPAD_START, "layer 0: escape is START, 0x%04X",
+          st.Gamepad.wButtons);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_B] == 0, "layer 0: escape is not B");
+
+    xbox_InputKeyboardUseLayer(1);
+    CHECK(xbox_InputKeyboardLayer() == 1, "layer 1 in force");
+    xbox_InputKeyboardBindings(&now);
+    CHECK(memcmp(&now, &menu, sizeof menu) == 0, "layer 1's bindings are reported");
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.wButtons == 0, "layer 1: escape is not START, 0x%04X",
+          st.Gamepad.wButtons);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_B] == 255, "layer 1: escape is B");
+
+    xbox_InputKeyboardUseLayer(XBOX_KEYBOARD_LAYERS);
+    xbox_InputKeyboardUseLayer(-1);
+    CHECK(xbox_InputKeyboardLayer() == 1, "out-of-range layers are ignored");
+    xbox_InputKeyboardSetLayer(XBOX_KEYBOARD_LAYERS, &play);   /* ignored, no crash */
+
+    xbox_InputKeyboardUseLayer(2);                  /* never installed: the map */
+    xbox_InputKeysClear();
+    xbox_InputKeySet('Z', 1);
+    xbox_InputKeyboardState(&st);
+    CHECK(st.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 255, "an empty layer is the map");
+
+    xbox_InputKeyboardSetLayer(1, NULL);
+    xbox_InputKeyboardSetBindings(NULL);
+    CHECK(xbox_InputKeyboardLayer() == 0, "back to layer 0");
+    xbox_InputKeysClear();
+}
+
 int main(void)
 {
     test_equivalence();
     test_bindings_text();
     test_win32_messages();
+    test_custom_bindings();
+    test_layers();
     printf("input_keyboard_map: %lu states compared, %d checks, %d failed\n",
            g_compared, g_checks, g_fail);
     return g_fail ? 1 : 0;

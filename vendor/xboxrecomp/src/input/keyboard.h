@@ -116,6 +116,25 @@ void xbox_InputKeyboardState(XBOX_INPUT_STATE *out);
  * resolves, and what xbox_InputMap_BindingsFormat writes as text. */
 struct InputBindings;
 void xbox_InputKeyboardBindings(struct InputBindings *b);
+/* A port's own keyboard controls in place of the map below (NULL: back to
+ * the map). Copied; call it before the title polls, from any thread, as it
+ * sets up. xbox_InputKeyboardBindings then reports these, so text written
+ * with xbox_InputMap_BindingsFormat shows what is in force. Same as
+ * xbox_InputKeyboardSetLayer(0, b) with layer 0 in force. */
+void xbox_InputKeyboardSetBindings(const struct InputBindings *b);
+
+/* Controls that follow the title's state (a key that pauses in play and
+ * goes back in the menus): up to XBOX_KEYBOARD_LAYERS sets of bindings, one
+ * in force at a time. A layer is installed (copied; NULL: the map) while it
+ * is not in force, normally before the title polls. UseLayer chooses the
+ * layer in force, from any thread at any time; out-of-range numbers are
+ * ignored. Change layers while the keys that change meaning are up, or a
+ * held key is read under the new layer at once (a press of its new
+ * meaning). */
+#define XBOX_KEYBOARD_LAYERS 4
+void xbox_InputKeyboardSetLayer(int layer, const struct InputBindings *b);
+void xbox_InputKeyboardUseLayer(int layer);
+int  xbox_InputKeyboardLayer(void);
 /* 0 when RECOMP_KEYBOARD is off, else 1 with *out filled by
  * xbox_InputKeyboardState(). */
 int  xbox_InputKeyboardPoll(XBOX_INPUT_STATE *out);

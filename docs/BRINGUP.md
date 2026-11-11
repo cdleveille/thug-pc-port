@@ -31,6 +31,218 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-11: glass shards look floaty and linger (investigated, no change)
+
+- Owner report: in Manhattan, glass broken by the skater leaves shards that
+  drift and stay on screen a long time.
+- The shatter is the game's script `ShatterAndDie` and the engine's
+  `Shatter` (NOTES "Title-side facts"). Shard life (4 s), gravity (128 units
+  a second squared, about a third of real gravity) and launch speeds are the
+  game's own defaults and script values, and the update runs on
+  `FrameLength()`. Measured with gdb: about 1.0 vblank per frame at the 60 fps
+  cap (a 1/60 s step, as on the console). Nothing in the port changes how
+  long or how fast the shards move.
+- Open: whether the shards look as they should. In the owner's screenshot
+  they are flat, bright, nearly opaque triangles; if the console drew them
+  more see-through, they would be less noticeable for those four seconds. An
+  F10 capture of the shards (and of an unbroken pane) would show their
+  material and blending.
+
+### 2026-11-11: the overlay's pad chord is L3 + R3
+
+- Owner request: both sticks clicked opens and closes the overlay, in place
+  of Back + Start. B still closes it.
+- The overlay now tracks every controller button held (any pad). Closing
+  leaves the chord (or B) held, and the game's pad used to be handed back at
+  once, so the game read those buttons as a fresh press (with Back + Start,
+  likely the pause menu); now it stays blocked until every button is let go.
+  A pad pulled out meanwhile clears the record.
+- Checked with synthetic controller events through the overlay's handler
+  (a temporary hook): L3 then R3 opens and blocks; R3 then L3 closes, the
+  pad comes back only when the last of the two is released; B with the
+  overlay closed reaches the game. The first button of the chord still
+  reaches the game before the second is pressed.
+
+### 2026-11-11: the disc image can sit beside the executable
+
+- Owner request: a player can drop the .iso next to `thug`; the first launch
+  creates `game/` and unpacks into it.
+- `thug_game_dir_locate` gives `<exe dir>/game` the image beside the
+  executable when that folder holds none or does not exist yet;
+  `thug_game_prepare` creates the folder before checking free space. Ready
+  files in `game/` still win, and an interrupted unpack resumes from the image
+  beside the executable. `thug-extract` shares the code.
+- Checked in a scratch install (`build/` copy of `thug` and a link to the
+  image, launched from elsewhere): first launch created `game/`, unpacked
+  3.4 GB, verified `default.xbe` and booted; the second launch used `game/`
+  directly; with `default.xbe` deleted the unpack ran again from the image
+  beside the executable; with nothing there (a copy outside the repository)
+  the message names both places.
+
+### 2026-11-11: "Restart to apply changes"
+
+- Owner request: a button in the overlay, shown only while a change waits
+  for a restart (today: switching between 4:3 and a wide aspect, whose menu
+  and HUD layout the game picks at boot). It asks first: progress since the
+  last save is lost.
+- `src/host/restart.c`: the main loop saves the window and settings, then
+  the process execs itself. Same PID, so a launcher that watches it (Steam)
+  sees one game. Run with the arguments and environment it was started with
+  (start-up exports the settings as THUG_* variables, which would override
+  the file just saved); every descriptor above stderr closed at the exec
+  (`close_range` with CLOEXEC), so the old window's display connection
+  closes with it; stdout and stderr handed back from the log
+  (`thug_launch_restore_stdio`), so the new run rotates the log as a fresh
+  start does. The executable's path is resolved at start-up and exec'd:
+  exec'ing `/proc/self/exe` renamed the process "exe".
+- Checked with a temporary trigger (since removed) in scratch config and
+  state folders: same PID and name after, 80 descriptors before and after,
+  `thug.prev.log` ending in "restarting", the new run at the new aspect, the
+  settings file written. The button and its confirmation by screenshot. Not
+  on Windows yet (`thug_restart_supported` is 0, the button stays hidden).
+
+### 2026-11-11: aspect ratios 4:3, 16:10 and 16:9
+
+- Owner request: resolutions in 4:3 and 16:10 as well as 16:9, with the
+  field of view following the aspect.
+- How the game does it (NOTES "Title-side facts"): the script command
+  `SetScreen` sets the screen aspect and an angle, from which the engine
+  keeps a field-of-view ratio; the scripts know standard (4:3, 72°) and
+  widescreen (16:9, 88.18°, which is Hor+). Found through the script C
+  function table and the scripts themselves (`camera.qb`, unpacked from
+  `qb.prx` into a scratch folder).
+- The setting `aspect_ratio` (`THUG_ASPECT`) replaces `widescreen`; old files
+  and `THUG_WIDESCREEN` are read as before. Wider than 4:3 turns on the
+  dashboard flag (the game's widescreen mode: HUD and menu layout); the
+  renderer renders and presents the chosen aspect; the aspect and ratio
+  getters are overridden to give the game the chosen aspect with the ratio
+  scaled to match. At 4:3 they pass the game's values through.
+- Checked: three scripted runs into Manhattan (16:9, 16:10, 4:3). The 16:10
+  frame's centre 4:3 matches the 4:3 frame (static scenery lines up
+  exactly in a blend; squeezing the whole frame ghosts), so 16:10 is Hor+.
+  A live switch 16:9 → 16:10 mid-level: the cameras read the ratio
+  200-480 times a second, so the view follows within a frame. Old and new
+  settings lines and variables resolve as expected.
+- Not changed: in widescreen mode the game stretches its 2D menus and HUD
+  by the anamorphic factor (as on the console at 16:9); at 16:10 the stretch
+  is 1.2 instead of 1.33. Switching between 4:3 and a wide aspect changes
+  that layout only at the next start (the overlay says so).
+
+### 2026-11-11: a line and a jump at the left edge in menu transitions
+
+- Owner report: after Story Mode and back, a thin bright line at the
+  image's left edge for a second or two, and the picture shifts a little.
+  (The black bars either side are the pillarbox: a maximized window on the
+  owner's 4K desktop is 3840x2041, wider than 16:9.)
+- The main menu's screen changes use the reset transition: the scene is
+  drawn into a 640x480 surface and composited onto the 2x-wide buffer. A
+  capture (`THUG_GL_CAPTURE_ON_X8=1`) showed the scene surface's first
+  column never drawn and the second half drawn, at internal scale 2.25: the
+  title's sprites start at x = 0.53125, the XDK's screen-space offset,
+  while the 2x-wide buffer's start at 0.0625. The undrawn column keeps
+  whatever the surface held (dark in my run, bright in the owner's), and
+  the whole image sits half a 640-pixel (3 output pixels) to the right of
+  the normal path's.
+- Fix: the renderer subtracts the offset for the surface's anti-aliasing
+  mode (`screen_offset`, NOTES "Title-side facts"). Checked with window
+  screenshots: the transition's left edge now matches a normal frame column
+  for column (before: a 4-5 pixel ramp and the shift); the first column of
+  every frame no longer carries one MSAA sample of clear colour; play and
+  the pause menu look the same as before. `THUG_GL_RAW_SCREEN_OFFSET=1`
+  restores the old mapping.
+
+### 2026-11-11: plugging in a controller crashed the game
+
+- Owner report, and two crashes in scripted runs: `malloc(): unaligned
+  tcache chunk detected` (abort) and a SIGSEGV in `malloc`, both on the
+  emulated USB thread: `ohci_run_periodic_list` → `usb_gamepad_report` →
+  `xbox_InputGetState` → `refresh_controllers_locked` →
+  `SDL_GameControllerOpen` (`xinput_device.c:268`) → sdl2-compat → SDL3.
+- Cause: every poll of a port without a pad (ports 2–4 always) re-enumerated
+  SDL's devices by index from the polling thread, while the window thread
+  pumps SDL events, which is where SDL handles a hotplug. The joystick lock
+  did not make the index-based calls safe on sdl2-compat over SDL3.
+- Fix (toolkit, tested): with the main pump on, the pumping thread alone
+  opens and closes pads, at start and on SDL's controller device events; the
+  title's threads only read the pads already open. Each connect and
+  disconnect is logged as `[INPUT] port N: ...`. A start-up run opened the
+  owner's Xbox 360 pad on port 1. Plugging in and out mid-game needs the
+  owner's hands.
+
+### 2026-11-11: Escape pauses, and goes back in the menus
+
+- Owner request: Escape is START while skating (it pauses), and B in the
+  menus (it goes back; in the pause menu B is "get back in the game").
+- `src/host/controls.c` installs two toolkit binding layers (Escape on START,
+  and Escape on B with Backspace and Tab) and, on each pass of the window
+  loop, puts in force the one the game's state calls for, only while Escape
+  is up: otherwise the press that pauses would reach the pause menu as a B
+  and resume at once. The toolkit gained the layers
+  (`xbox_InputKeyboardSetLayer`, `xbox_InputKeyboardUseLayer`; tested),
+  since swapping bindings with `SetBindings` was not safe while the title
+  polls.
+- First version: the byte that a memory diff showed equal in the pause and
+  front-end menus and different while skating (`0x0024C3BC`). The owner
+  found Escape still START in the main menu: Options' first item, MTX
+  TEASER, played when Escape was pressed there. The byte turned out to be
+  the music's pause flag (`PauseMusic`), which the front end clears when its
+  music starts.
+- Second version, from the game's own script functions (named through the
+  C-function table, NOTES "Title-side facts"): B when the current level is
+  `load_skateshop` (the main menu and every screen under it) or
+  `GameIsPaused`; START otherwise, including the intro movies. `InFrontEnd`
+  was no use: THUG's main menu runs in the current game mode, whose
+  `is_frontend` is 0.
+- Checked in visible scripted runs against frame dumps: B from the first
+  main menu, through the load prompt, Options (B returns to the main menu),
+  Create-A-Skater and System Link; START from the level load and while
+  skating; B for each pause, START on resume; B through Quit, its prompt and
+  the reload of the main menu. Pressing Escape itself still needs the owner
+  (no key injector on this Wayland host).
+- Keyed to the USA retail XBE like every address here.
+
+### 2026-11-11: keyboard controls for the menus
+
+- Owner request: Enter/Space A, Backspace/Tab B, Escape START, WASD and the
+  arrows the d-pad. The toolkit's keyboard layer already fed port 0 (merged
+  over a pad, or alone with none), with a fixed map; it gained
+  `xbox_InputKeyboardSetBindings` (toolkit, tested) and
+  `src/host/controls.c` installs THUG's bindings. `RECOMP_KEYBOARD=1` is
+  now a default.
+- Gotchas handled: Alt+Enter (fullscreen) and Alt+Tab (window switching) do
+  not reach the game as A and B; opening the F1 overlay releases every held
+  key, since the overlay takes the key-ups; Escape closing the overlay never
+  reaches the game (the overlay consumes it). Keys are read only with the
+  window focused, and losing the focus releases them (toolkit).
+- Not tested end to end: no key injector on this Wayland host. The binding
+  and SDL-event layers are covered by the toolkit's tests; the owner checks
+  the menus.
+
+### 2026-11-11: the window reopens as it was left
+
+- Owner request. The settings file gains `window_width`, `window_height`,
+  `window_x`, `window_y` and `window_maximized`: `host_window.c` records the
+  plain window's size (not while maximised or fullscreen, so un-maximising
+  goes back to it), the maximised state and, except on Wayland (no client
+  may read or set its position), the position, on every size, move,
+  maximise and restore event, and saves them when the window is closed. The
+  renderer opens the window from them, clamped to today's desktop, the
+  position only if it still lands on a display; `[PBGL] window ...` says
+  what it did. Checked on KDE Wayland with a scratch config: 1000x600
+  reopens at 1000x600, and maximised reopens maximised. The save on close
+  is for the owner to confirm (a script cannot press the close button).
+
+### 2026-11-11: window icon
+
+- The owner's `thug.png` (512x512 RGBA) is the window icon: CMake runs
+  `scripts/embed_icon.py` (standard-library PNG decode, 2x2 box shrink with
+  premultiplied alpha, identical to ImageMagick's box resize) into a C array,
+  and `src/host/window_icon.c` sets it on the game window and the first-launch
+  progress window, with the app ID `thug-pc-port`. On KDE Plasma 6.8 Wayland
+  (SDL 3.4 under sdl2-compat) it reaches the title bar through
+  xdg-toplevel-icon; checked with a window screenshot. The taskbar is for the
+  owner to confirm.
+
 ### 2026-11-11: still water, texture matrices and texgen; glitch capture
 
 - **Owner reports:** in Manhattan (story), bailing into the river makes parts

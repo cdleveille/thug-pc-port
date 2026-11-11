@@ -1,12 +1,13 @@
 /**
  * overlay.cpp -- the in-game settings overlay. See overlay.h.
  *
- * F1 (or Back+Start held together on a pad) opens and closes it; Esc or B
+ * F1 (or L3 + R3, both sticks clicked, on a pad) opens and closes it; Esc or B
  * closes it too. While it is open the game sees its pad at rest
  * (xbox_InputSetBlocked) and gets no keyboard input, and the overlay takes
- * keyboard, mouse and pad navigation. Every change applies at once except
- * widescreen, which the game reads at start-up. The settings file is written
- * when the overlay closes.
+ * keyboard, mouse and pad navigation. Every change applies at once, except
+ * that the game picks its widescreen or 4:3 menu and HUD layout at start-up
+ * (16:10 and 16:9 share one). The settings file is written when the overlay
+ * closes.
  */
 #include "overlay.h"
 
@@ -21,10 +22,12 @@
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 
+#include "host/restart.h"
 extern "C" {
 #include "settings.h"
 #include "gpu/nv2a_pb_gl.h"
 void xbox_InputSetBlocked(int on);
+void xbox_InputKeysClear(void);
 }
 
 /* ── State shared between the threads ─────────────────────────────────── */
@@ -36,10 +39,27 @@ static volatile int     s_open;
 static volatile int     s_fs_request = -1;
 static volatile float   s_mouse_sx = 1.0f, s_mouse_sy = 1.0f;
 static volatile int     s_save_pending;
-static int              s_widescreen_at_boot;
+static volatile int     s_restart_request;  /* "Restart to apply changes" chosen */
+static float            s_aspect_at_boot;   /* the game set its layout from this */
 
-/* Pad chord state (main thread). */
-static int s_pad_back, s_pad_start;
+/* A change that only start-up applies: the game picks its 4:3 or widescreen
+ * menu and HUD layout as it boots (16:10 and 16:9 share one). */
+static bool restart_pending(void)
+{
+    return thug_aspect_is_wide(g_thug_settings.aspect) != thug_aspect_is_wide(s_aspect_at_boot);
+}
+
+/* Pad state (main thread): the controller buttons held now, one bit per
+ * SDL_GameControllerButton, on any pad; and whether the game's pad stays
+ * blocked until they are all let go. Closing with L3+R3 or B leaves those
+ * buttons held, and the game would read them as a fresh press. */
+static uint32_t s_pad_held;
+static int      s_unblock_on_release;
+
+static bool pad_held(int button)
+{
+    return (s_pad_held >> button) & 1u;
+}
 
 /* ── Render-thread state ──────────────────────────────────────────────── */
 
@@ -70,8 +90,15 @@ static void set_open(int open)
     if (open == s_open)
         return;
     s_open = open;
-    xbox_InputSetBlocked(open);
+    /* Closing hands the pad back once nothing is held (see s_pad_held). */
+    s_unblock_on_release = !open && s_pad_held != 0;
+    if (!s_unblock_on_release)
+        xbox_InputSetBlocked(open);
     if (open) {
+        /* The overlay takes the keys from here on, key-ups included: let
+         * go of every key the game saw held, or one held now would stay
+         * held for the game after the overlay closes. */
+        xbox_InputKeysClear();
         /* Start the overlay with the pointer where it is now. */
         SDL_Event m;
         int x = 0, y = 0;
@@ -130,9 +157,19 @@ extern "C" int thug_overlay_event(const SDL_Event *ev)
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP: {
         int down = ev->type == SDL_CONTROLLERBUTTONDOWN;
-        if (ev->cbutton.button == SDL_CONTROLLER_BUTTON_BACK) s_pad_back = down;
-        if (ev->cbutton.button == SDL_CONTROLLER_BUTTON_START) s_pad_start = down;
-        if (down && s_pad_back && s_pad_start) {
+        int b = ev->cbutton.button;
+        if (b >= 0 && b < 32) {
+            if (down) s_pad_held |= 1u << b;
+            else      s_pad_held &= ~(1u << b);
+        }
+        if (!down && s_unblock_on_release && !s_pad_held) {
+            s_unblock_on_release = 0;
+            xbox_InputSetBlocked(0);
+        }
+        /* L3 + R3 (both sticks clicked) opens and closes the overlay. */
+        if (down && (b == SDL_CONTROLLER_BUTTON_LEFTSTICK || b == SDL_CONTROLLER_BUTTON_RIGHTSTICK)
+                && pad_held(SDL_CONTROLLER_BUTTON_LEFTSTICK)
+                && pad_held(SDL_CONTROLLER_BUTTON_RIGHTSTICK)) {
             set_open(!s_open);
             return 1;
         }
@@ -146,6 +183,14 @@ extern "C" int thug_overlay_event(const SDL_Event *ev)
     case SDL_CONTROLLERAXISMOTION:
         if (s_open) queue_event(ev);
         return 0;
+    case SDL_CONTROLLERDEVICEREMOVED:
+        /* A pad pulled out sends no button-ups: forget what it held. */
+        s_pad_held = 0;
+        if (s_unblock_on_release) {
+            s_unblock_on_release = 0;
+            xbox_InputSetBlocked(0);
+        }
+        return 0;
     default:
         return 0;
     }
@@ -154,6 +199,13 @@ extern "C" int thug_overlay_event(const SDL_Event *ev)
 extern "C" int thug_overlay_is_open(void)
 {
     return s_open;
+}
+
+extern "C" int thug_overlay_take_restart_request(void)
+{
+    int r = s_restart_request;
+    s_restart_request = 0;
+    return r;
 }
 
 extern "C" int thug_overlay_take_fullscreen_request(void)
@@ -417,30 +469,90 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
     /* ---- Display ---- */
     ImGui::SeparatorText("Display");
     {
-        static const int k_heights[] = { 2160, 1440, 1080, 900, 720, 480 };
+        char cur[32];
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Aspect ratio");
+        help_marker("The shape of the picture. Pick your display's: 16:9 for most "
+                    "monitors and TVs, 16:10 for many laptops, 4:3 for the "
+                    "original. The field of view widens to fit: the same view up "
+                    "and down, more at the sides. In 16:9 and 16:10 the menus and "
+                    "HUD use the game's own widescreen layout.");
+        ImGui::SameLine(label_w);
+        ImGui::SetNextItemWidth(-1);
+        snprintf(cur, sizeof cur, "%s", thug_aspect_name(S.aspect));
+        if (ImGui::BeginCombo("##aspect", cur)) {
+            for (int i = 0; i < thug_aspect_count; i++) {
+                const ThugAspect &a = thug_aspects[i];
+                bool sel = fabsf(S.aspect - a.value) < 0.01f;
+                if (ImGui::Selectable(a.name, sel) && !sel) {
+                    S.aspect = a.value;
+                    nv2a_pb_gl_set_aspect(a.value);
+                    aspect = a.value;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        /* The game picks its widescreen or standard layout at start-up;
+         * switching between 16:10 and 16:9 needs nothing more. */
+        if (restart_pending()) {
+            ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "menus and HUD follow after a restart");
+        }
+    }
+    {
+        /* Common sizes for each shape, as the internal picture's height
+         * (the game's 480 lines times the scale); the width follows the
+         * aspect. Labels are the usual names (854x480 is 853.3). */
+        struct Res { int w, h; };
+        static const Res k_4_3[]   = { { 2880, 2160 }, { 2048, 1536 }, { 1920, 1440 },
+                                       { 1600, 1200 }, { 1400, 1050 }, { 1280, 960 },
+                                       { 1024, 768 }, { 800, 600 }, { 640, 480 } };
+        static const Res k_16_10[] = { { 3840, 2400 }, { 2560, 1600 }, { 1920, 1200 },
+                                       { 1680, 1050 }, { 1440, 900 }, { 1280, 800 },
+                                       { 768, 480 } };
+        static const Res k_16_9[]  = { { 3840, 2160 }, { 2560, 1440 }, { 1920, 1080 },
+                                       { 1600, 900 }, { 1280, 720 }, { 854, 480 } };
+        const Res *list;
+        size_t n;
         char cur[64], item[64];
         int native_h = (int)floorf(native * 480.0f + 0.5f);
         float sc = nv2a_pb_gl_scale();
         int cur_h = (int)floorf(sc * 480.0f + 0.5f);
 
+        if (aspect < 1.4f) {
+            list = k_4_3;   n = sizeof k_4_3 / sizeof k_4_3[0];
+        } else if (aspect < 1.7f) {
+            list = k_16_10; n = sizeof k_16_10 / sizeof k_16_10[0];
+        } else {
+            list = k_16_9;  n = sizeof k_16_9 / sizeof k_16_9[0];
+        }
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Resolution");
+        help_marker("The size the game is drawn at, before it is scaled to the "
+                    "window. Native matches your display's height. Higher is "
+                    "sharper and costs more; 480 lines is the original.");
         ImGui::SameLine(label_w);
         ImGui::SetNextItemWidth(-1);
-        if (S.res_scale <= 0.0f)
+        if (S.res_scale <= 0.0f) {
             snprintf(cur, sizeof cur, "Native  (%dx%d)", (int)(native_h * aspect + 0.5f), native_h);
-        else
+        } else {
             snprintf(cur, sizeof cur, "%dx%d", (int)(cur_h * aspect + 0.5f), cur_h);
+            for (size_t i = 0; i < n; i++)
+                if (list[i].h == cur_h)
+                    snprintf(cur, sizeof cur, "%dx%d", list[i].w, list[i].h);
+        }
         if (ImGui::BeginCombo("##res", cur)) {
             snprintf(item, sizeof item, "Native  (%dx%d)", (int)(native_h * aspect + 0.5f), native_h);
             if (ImGui::Selectable(item, S.res_scale <= 0.0f)) {
                 S.res_scale = 0.0f;
                 nv2a_pb_gl_set_scale(0.0f);
             }
-            for (size_t i = 0; i < sizeof k_heights / sizeof k_heights[0]; i++) {
-                int h = k_heights[i];
+            for (size_t i = 0; i < n; i++) {
+                int h = list[i].h;
                 bool sel = S.res_scale > 0.0f && cur_h == h;
-                snprintf(item, sizeof item, "%dx%d%s", (int)(h * aspect + 0.5f), h,
+                snprintf(item, sizeof item, "%dx%d%s", list[i].w, h,
                          h == 480 ? "  (original)" : "");
                 if (ImGui::Selectable(item, sel)) {
                     S.res_scale = (float)h / 480.0f;
@@ -559,18 +671,6 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
             nv2a_pb_gl_set_brightness(S.brightness);
         }
     }
-    {
-        bool ws = S.widescreen != 0;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Widescreen (16:9)");
-        ImGui::SameLine(label_w);
-        if (ImGui::Checkbox("##ws", &ws))
-            S.widescreen = ws;
-        if ((S.widescreen != 0) != (s_widescreen_at_boot != 0)) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "applies after a restart");
-        }
-    }
 
     /* ---- Audio ---- */
     ImGui::SeparatorText("Audio");
@@ -652,6 +752,30 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
     }
 
     ImGui::Separator();
+    /* Only when something waits for a restart, and this build can do one. */
+    if (restart_pending() && thug_restart_supported()) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.45f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.92f, 0.55f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.70f, 0.38f, 0.06f, 1.0f));
+        if (ImGui::Button("Restart to apply changes"))
+            ImGui::OpenPopup("Restart now?");
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+    }
+    if (ImGui::BeginPopupModal("Restart now?", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextUnformatted("Restart the game to apply the changes?\n"
+                               "Progress since your last save will be lost.");
+        if (ImGui::Button("Restart")) {
+            s_restart_request = 1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel"))
+            ImGui::CloseCurrentPopup();
+        ImGui::SetItemDefaultFocus();
+        ImGui::EndPopup();
+    }
     if (ImGui::Button("Restore defaults"))
         ImGui::OpenPopup("Restore defaults?");
     if (ImGui::BeginPopupModal("Restore defaults?", NULL,
@@ -666,6 +790,7 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
             nv2a_pb_gl_set_aniso(S.aniso);
             nv2a_pb_gl_set_msaa(S.msaa);
             nv2a_pb_gl_set_brightness(S.brightness);
+            nv2a_pb_gl_set_aspect(S.aspect);
             thug_settings_apply_audio_input();
             ImGui::CloseCurrentPopup();
         }
@@ -675,7 +800,7 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
         ImGui::SetItemDefaultFocus();
         ImGui::EndPopup();
     }
-    ImGui::TextDisabled("F1 or Esc closes (pad: Back+Start, B). F11: fullscreen.");
+    ImGui::TextDisabled("F1 or Esc closes (pad: L3+R3, B). F11: fullscreen.");
     ImGui::TextDisabled("Saved to %s", thug_settings_path());
     ImGui::End();
 }
@@ -724,7 +849,7 @@ static void overlay_render(int dw, int dh)
 extern "C" void thug_overlay_install(SDL_Window *win)
 {
     s_lock = SDL_CreateMutex();
-    s_widescreen_at_boot = g_thug_settings.widescreen;
+    s_aspect_at_boot = g_thug_settings.aspect;
     thug_overlay_window_resized(win);
     nv2a_pb_gl_set_overlay(overlay_render);
     if (getenv("THUG_OVERLAY_OPEN"))      /* testing: start with it open */

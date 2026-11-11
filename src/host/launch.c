@@ -7,6 +7,9 @@
 
 #include "launch.h"
 #include "game_data.h"
+#if !defined(_WIN32)
+#include "window_icon.h"
+#endif
 
 #include <errno.h>
 #include <stdarg.h>
@@ -28,6 +31,9 @@
 /* The terminal the player started us from, when the log went to a file; -1
  * otherwise (then stderr is where messages go). */
 static int  s_console = -1;
+/* stdout and stderr as the game was started with, while the log stands in
+ * for them; -1 when it does not. A restart hands them back. */
+static int  s_orig_out = -1, s_orig_err = -1;
 static char s_log_path[1024];
 static char s_crash_msg[1200];
 static size_t s_crash_len;
@@ -110,9 +116,22 @@ void thug_launch_log_setup(void)
     }
     fflush(stdout);
     fflush(stderr);
+    s_orig_out = fcntl(1, F_DUPFD_CLOEXEC, 3);
+    s_orig_err = fcntl(2, F_DUPFD_CLOEXEC, 3);
     dup2(fd, 1);
     dup2(fd, 2);
     close(fd);
+#endif
+}
+
+void thug_launch_restore_stdio(void)
+{
+#if !defined(_WIN32)
+    fflush(NULL);
+    if (s_orig_out >= 0)
+        dup2(s_orig_out, 1);
+    if (s_orig_err >= 0)
+        dup2(s_orig_err, 2);
 #endif
 }
 
@@ -216,6 +235,7 @@ static int ui_progress(uint64_t done, uint64_t total, void *user)
             ui->win = SDL_CreateWindow(TITLE ": unpacking the game files",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                        520, 90, 0);
+            thug_window_set_icon((SDL_Window *)ui->win);
             ui_draw(ui, 0);
         }
 #endif
@@ -277,16 +297,22 @@ int thug_launch_prepare(char *game_dir, size_t n)
 #if !defined(_WIN32)
     if (!headless()) {
         SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+        thug_window_hints();
         ui.video = SDL_WasInit(SDL_INIT_VIDEO) || SDL_InitSubSystem(SDL_INIT_VIDEO) == 0;
     }
 #endif
 
     if (!found && !gd.has_xbe && !gd.iso[0]) {
+        char exe[1024];
+        thug_exe_dir(exe, sizeof exe);
         snprintf(text, sizeof text,
                  "Tony Hawk's Underground needs your game files.\n\n"
-                 "Put your disc image (a .iso of the USA Xbox release) or the files "
-                 "unpacked from it (default.xbe and the data folder) in:\n\n  %s\n\n"
-                 "Looked in:\n%s", gd.dir, searched);
+                 "Put your disc image (a .iso of the USA Xbox release) beside the "
+                 "game, in:\n\n  %s\n\n"
+                 "It is unpacked into a game folder there on the first launch. Or put "
+                 "the files already unpacked from it (default.xbe and the data folder) "
+                 "in:\n\n  %s\n\n"
+                 "Looked in:\n%s", exe, gd.dir, searched);
         ui_error(&ui, text);
         return 0;
     }

@@ -21,6 +21,35 @@ static int g_fail, g_checks;
     if (!(cond)) { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
                    printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+/* xinput_device.c's, which this test does not link: count the calls. */
+static int g_refreshes;
+void xbox_InputSdlRefreshControllers(void)
+{
+    g_refreshes++;
+}
+
+/* Controllers are opened and closed on the pumping thread: once at init,
+ * then on each device event; other controller events do not. */
+static void test_controller_hotplug(int after_init)
+{
+    static const Uint32 types[] = {
+        SDL_CONTROLLERDEVICEADDED, SDL_CONTROLLERDEVICEREMOVED,
+        SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERAXISMOTION,
+    };
+    int before;
+
+    CHECK(after_init == 1, "init refreshes the controllers once, got %d", after_init);
+    before = g_refreshes;
+    for (size_t i = 0; i < sizeof types / sizeof types[0]; i++) {
+        SDL_Event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = types[i];
+        xbox_InputSdlEvent(&ev);
+    }
+    CHECK(g_refreshes == before + 2, "added and removed refresh, others do not: %d",
+          g_refreshes - before);
+}
+
 static void key(Uint32 type, SDL_Keycode sym, Uint16 mod, Uint8 repeat)
 {
     SDL_Event ev;
@@ -284,6 +313,7 @@ int main(void)
     }
     xbox_InputSdlInit();
     CHECK(!SDL_IsTextInputActive(), "text input still active after init");
+    test_controller_hotplug(g_refreshes);
     test_keycodes();
     test_events();
     SDL_Quit();

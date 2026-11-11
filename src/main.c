@@ -54,7 +54,9 @@
 
 #include "gpu/nv2a_pb_gl.h"
 #include "host/host_window.h"
+#include "host/controls.h"
 #include "host/launch.h"
+#include "host/restart.h"
 #include "ui/settings.h"
 
 /* ── Guest register file (defined thread-local in xbox_memory_layout.c) ──
@@ -288,6 +290,8 @@ static void thug_set_default_env(void)
     set_default("RECOMP_PB_EXEC", "1");
     set_default("RECOMP_VBLANK", "paced");
     set_default("RECOMP_USB", "1");
+    /* The keyboard as player one's pad, for the menus (src/host/controls.h). */
+    set_default("RECOMP_KEYBOARD", "1");
     set_default("RECOMP_DISPATCH_GATE", "1");
     /* RECOMP_ASYNC_IO: a read on an asynchronous handle returns
      * STATUS_PENDING, as the console's DVD/HDD path does. THUG's stream
@@ -317,12 +321,11 @@ static void thug_set_default_env(void)
      * It then sets D3DPRESENTFLAG_WIDESCREEN, widens its field of view (Hor+)
      * and lays its HUD out for 16:9, rendering anamorphic into its 640x480
      * surfaces; the GPU renderer gives the x axis the extra resolution and
-     * presents 16:9. THUG_WIDESCREEN=0 keeps 4:3. */
-    {
-        const char *ws = getenv("THUG_WIDESCREEN");
-        if (!(ws && ws[0] == '0'))
-            set_default("RECOMP_WIDESCREEN", "1");
-    }
+     * presents the chosen aspect. On for any aspect wider than 4:3
+     * (aspect_ratio, THUG_ASPECT): 16:10 runs the same widescreen mode, and
+     * recomp_manual.c gives the game's camera the exact aspect. */
+    if (thug_aspect_is_wide(g_thug_settings.aspect))
+        set_default("RECOMP_WIDESCREEN", "1");
 }
 
 /* ── Boot ──────────────────────────────────────────────────── */
@@ -350,6 +353,7 @@ static int thug_guest_main(void)
     g_xbox_mem_offset = xbox_GetMemoryOffset();
     fprintf(stderr, "[thug] Xbox memory mapped, offset 0x%llX\n",
             (unsigned long long)g_xbox_mem_offset);
+    thug_keyboard_controls_guest_mapped(g_xbox_mem_offset);   /* Escape: START or B */
 
     /* D3D's GPU-progress fence. XDK D3D (5659) keeps its device pointer at
      * THUG_D3D_DEVICE_PTR; device+0x2C is the fence it has submitted and
@@ -408,8 +412,9 @@ static int thug_guest_main(void)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    /* The arguments and environment as the player started us, before
+     * start-up adds to them: what a restart from the overlay runs with. */
+    thug_restart_init(argc, argv);
 
     /* Unbuffered so boot progress survives a crash or hang. */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -433,6 +438,7 @@ int main(int argc, char **argv)
     thug_settings_load();
     thug_set_default_env();
     thug_settings_apply_audio_input();   /* master volume, vibration strength */
+    thug_keyboard_controls_install();    /* Enter/Space A, Esc START or B, ... */
 
     /* The game's files: found, or unpacked from the disc image and checked;
      * otherwise the player is told what is missing. */

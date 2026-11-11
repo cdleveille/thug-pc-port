@@ -20,11 +20,21 @@ int  xbox_InputSdlKeyToVk(int sdl_keycode);
 int  xbox_InputSdlKeyToSideVk(int sdl_keycode);
 /* An SDL mouse button (SDL_BUTTON_LEFT ...) as its VK (VK_LBUTTON ...), or 0. */
 int  xbox_InputSdlButtonToVk(int sdl_button);
-/* Once the window exists: stop SDL's text input. */
+/* Once the window exists, on the thread that pumps its events (after
+ * xbox_InputSetMainPump(1)): stop SDL's text input, and open the controllers
+ * already connected. */
 void xbox_InputSdlInit(void);
 /* Every event of the main loop: keys, mouse buttons, and the window events
- * that release them. Others are ignored. */
+ * that release them; a controller added or removed opens or closes it
+ * (xbox_InputSdlRefreshControllers). Others are ignored. */
 void xbox_InputSdlEvent(const SDL_Event *ev);
+/* Open the controllers SDL has and close the ones it lost (xinput_device.c).
+ * With the main pump on, only the pumping thread may do this: opening walks
+ * SDL's device list by index, which that thread rebuilds as it handles a
+ * hotplug, so an open from a title thread at that moment can corrupt the
+ * heap (seen with sdl2-compat on SDL3). The title's threads then only read
+ * the controllers already open. */
+void xbox_InputSdlRefreshControllers(void);
 
 #ifdef __cplusplus
 }

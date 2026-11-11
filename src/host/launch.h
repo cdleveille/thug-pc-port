@@ -25,6 +25,11 @@ extern "C" {
 
 void thug_launch_log_setup(void);
 
+/* Put stdout and stderr back as the game was started with (the log, if
+ * thug_launch_log_setup moved them to it, stays where it is on disk): for a
+ * restart, so the new run sets up its own log. */
+void thug_launch_restore_stdio(void);
+
 /* 1 with game_dir ready to boot from, or 0 after telling the player why the
  * game cannot start (the caller exits). */
 int thug_launch_prepare(char *game_dir, size_t n);

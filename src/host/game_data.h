@@ -4,9 +4,9 @@
  *
  * The game reads its files from a directory (the Xbox's D: drive): game/,
  * holding default.xbe and data/. A player may instead put their disc image
- * (.iso, a full Redump dump or a trimmed XISO) in that directory; it is then
- * unpacked next to itself once, and default.xbe is checked against the one
- * build this port supports.
+ * (.iso, a full Redump dump or a trimmed XISO) in that directory, or beside
+ * the executable; it is then unpacked into game/ once (created if need be),
+ * and default.xbe is checked against the one build this port supports.
  *
  * No SDL here: build/bin/thug-extract (tools/thug_extract.c) uses the same
  * code before the game itself can be built, since lifting needs default.xbe.
@@ -38,8 +38,10 @@ void thug_game_dir_scan(const char *dir, ThugGameDir *out);
 
 /* Where the game's files are: $THUG_GAME_DIR if set, else the first of
  * <exe dir>/game, <exe dir>/../game, <exe dir>/../../game (a build tree's
- * build/bin/) and ./game that holds default.xbe or a disc image. Returns 1
- * with *out scanned, or 0 with *out describing the first candidate (where the
+ * build/bin/) and ./game that holds default.xbe or a disc image. A disc image
+ * beside the executable counts as <exe dir>/game's when that folder holds
+ * none (or does not exist yet: thug_game_prepare creates it). Returns 1 with
+ * *out scanned, or 0 with *out describing the first candidate (where the
  * files should go) and `searched` listing every place looked, one per line. */
 int thug_game_dir_locate(ThugGameDir *out, char *searched, size_t searched_n);
 

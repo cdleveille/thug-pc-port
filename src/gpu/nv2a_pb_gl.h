@@ -44,14 +44,16 @@ int nv2a_pb_gl_init(void);
  *
  * Switches, also read at nv2a_pb_gl_init:
  *   THUG_RES_SCALE=<x>      internal resolution as a multiple of 640x480
- *                           (default: desktop height / 480; 1 when headless)
+ *                           (the settings' default is 2.25, 1080 lines; 0 or
+ *                           unset: desktop height / 480, 1 when headless)
  *   THUG_VSYNC=0            swap without waiting for the display
  *   THUG_FULLSCREEN=1       start in borderless fullscreen (F11 toggles)
  *   THUG_GL_DUMP=<dir>      write the presented frame as PPM every
  *   THUG_GL_DUMP_EVERY=<n>  n flips (default 60)
  *   THUG_BRIGHTNESS=<b>     gamma on the presented frame, 0.5 to 2 (1:
  *                           as rendered; above 1 lifts the midtones)
- *   THUG_MSAA=2|4|8         multisample every surface (default off); with
+ *   THUG_MSAA=2|4|8         multisample every surface (the settings' default
+ *                           is 4; off when unset); with
  *                           GL_ARB_sample_shading, alpha-tested edges are
  *                           smoothed too (THUG_GL_NO_A2C=1 turns that off)
  *   THUG_GL_READBACK=1      also write each frame into the title's surface
@@ -74,7 +76,10 @@ void nv2a_pb_gl_stats(uint64_t *flips, uint32_t *w, uint32_t *h);
 void  nv2a_pb_gl_set_scale(float scale);   /* internal scale; 0 = native */
 float nv2a_pb_gl_scale(void);              /* the scale in effect */
 float nv2a_pb_gl_native_scale(void);       /* desktop height / 480 */
-float nv2a_pb_gl_aspect(void);             /* presented aspect (4:3 or 16:9) */
+float nv2a_pb_gl_aspect(void);             /* presented aspect (4:3, 16:10, 16:9) */
+/* A new aspect, applied at the next flip: every surface is rebuilt at the
+ * new width, as for a resolution change. Any thread. */
+void  nv2a_pb_gl_set_aspect(float aspect);
 void  nv2a_pb_gl_set_vsync(int on);
 int   nv2a_pb_gl_vsync(void);
 void  nv2a_pb_gl_set_fps_limit(int fps);   /* 0 = off */

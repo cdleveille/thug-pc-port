@@ -289,6 +289,7 @@ int thug_game_dir_locate(ThugGameDir *out, char *searched, size_t searched_n)
 {
     const char *env = getenv("THUG_GAME_DIR");
     char exe[1024], cand[5][1100], first[1100] = "";
+    char beside[sizeof out->iso] = "";  /* an image next to the executable */
     size_t used = 0;
     int i, nc = 0;
 
@@ -299,6 +300,14 @@ int thug_game_dir_locate(ThugGameDir *out, char *searched, size_t searched_n)
         nc = 1;
     } else {
         thug_exe_dir(exe, sizeof exe);
+        {
+            char t[1100];
+            tidy_path(exe, t, sizeof t);
+            find_image(t, beside, sizeof beside);
+            if (searched && used + strlen(t) + 40 < searched_n)
+                used += (size_t)snprintf(searched + used, searched_n - used,
+                                         "  %s (a disc image beside the game)\n", t);
+        }
         snprintf(cand[nc++], sizeof cand[0], "%s/game", exe);
         snprintf(cand[nc++], sizeof cand[0], "%s/../game", exe);
         snprintf(cand[nc++], sizeof cand[0], "%s/../../game", exe);
@@ -321,8 +330,18 @@ int thug_game_dir_locate(ThugGameDir *out, char *searched, size_t searched_n)
             used += (size_t)snprintf(searched + used, searched_n - used, "  %s\n", cand[i]);
         if (is_dir(cand[i])) {
             thug_game_dir_scan(cand[i], out);
+            /* <exe dir>/game unpacks from an image beside the executable
+             * when it holds none itself (a first launch, or a resumed one). */
+            if (i == 0 && !out->iso[0] && beside[0])
+                snprintf(out->iso, sizeof out->iso, "%s", beside);
             if (out->has_xbe || out->iso[0])
                 return 1;
+        } else if (i == 0 && beside[0]) {
+            /* No game folder yet: unpacking creates it. */
+            memset(out, 0, sizeof *out);
+            snprintf(out->dir, sizeof out->dir, "%s", cand[i]);
+            snprintf(out->iso, sizeof out->iso, "%s", beside);
+            return 1;
         }
     }
     memset(out, 0, sizeof *out);
@@ -638,8 +657,9 @@ ThugGameStatus thug_game_prepare(ThugGameDir *gd, ThugProgressFn fn, void *user,
         }
         snprintf(err, err_n,
                  "Tony Hawk's Underground needs your game files.\n\n"
-                 "Put your disc image (a .iso of the USA Xbox release) or the files "
-                 "unpacked from it (default.xbe and the data folder) in:\n\n%s", gd->dir);
+                 "Put your disc image (a .iso of the USA Xbox release) beside the game, "
+                 "or it or the files unpacked from it (default.xbe and the data folder) "
+                 "in:\n\n%s", gd->dir);
         return THUG_GAME_MISSING;
     }
 
@@ -687,6 +707,14 @@ ThugGameStatus thug_game_prepare(ThugGameDir *gd, ThugProgressFn fn, void *user,
             st = THUG_GAME_BAD_IMAGE;
             goto out;
         }
+    }
+
+    /* The game folder, when the image sits beside the executable and this
+     * is the first launch. */
+    snprintf(path, sizeof path, "%s/default.xbe", gd->dir);
+    if (!is_dir(gd->dir) && make_parents(path) != 0) {
+        snprintf(err, err_n, "Cannot create the folder %s: %s.", gd->dir, strerror(errno));
+        goto out;
     }
 
     /* Room for what is not there already (a re-run after an interrupted

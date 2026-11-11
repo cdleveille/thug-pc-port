@@ -31,6 +31,8 @@
 #include <unistd.h>
 
 #include "host_window.h"
+#include "controls.h"
+#include "restart.h"
 #include "gpu/nv2a_pb_gl.h"
 #include "ui/overlay.h"
 #include "ui/settings.h"
@@ -105,6 +107,35 @@ static void update_cursor(SDL_Window *win)
                    && now_ms() - s_mouse_moved_ms < CURSOR_IDLE_MS);
     if ((SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE) != want)
         SDL_ShowCursor(want ? SDL_ENABLE : SDL_DISABLE);
+}
+
+/* The window as the player leaves it, kept in the settings (window_*) and
+ * written when the game closes: the size and position of the plain window
+ * (not while maximised or fullscreen, so un-maximising next time goes back
+ * to it), and whether it was maximised. Wayland lets no client read or choose
+ * its position, so there the position stays unset and the desktop places the
+ * window, as it does every window. */
+static void remember_window(SDL_Window *win)
+{
+    Uint32 fl = SDL_GetWindowFlags(win);
+    const char *drv = SDL_GetCurrentVideoDriver();
+    int w = 0, h = 0, x = 0, y = 0;
+
+    if (fl & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED))
+        return;
+    g_thug_settings.window_maximized = (fl & SDL_WINDOW_MAXIMIZED) != 0;
+    if (fl & SDL_WINDOW_MAXIMIZED)
+        return;
+    SDL_GetWindowSize(win, &w, &h);
+    if (w > 0 && h > 0) {
+        g_thug_settings.window_w = w;
+        g_thug_settings.window_h = h;
+    }
+    if (!drv || strcmp(drv, "wayland") != 0) {
+        SDL_GetWindowPosition(win, &x, &y);
+        g_thug_settings.window_x = x;
+        g_thug_settings.window_y = y;
+    }
 }
 
 static void set_fullscreen(SDL_Window *win, int on)
@@ -184,7 +215,15 @@ int thug_host_window_main(int (*guest_main)(void))
                  * it uses while open. */
                 if (thug_overlay_event(&ev))
                     continue;
-                xbox_InputSdlEvent(&ev);
+                /* Window shortcuts are not game input: Alt+Enter toggles
+                 * fullscreen and Alt+Tab switches windows, but Enter is A
+                 * and Tab is B (src/host/controls.h). Key-ups always pass,
+                 * so nothing is left held. */
+                if (!(ev.type == SDL_KEYDOWN && (ev.key.keysym.mod & KMOD_ALT)
+                      && (ev.key.keysym.sym == SDLK_RETURN
+                          || ev.key.keysym.sym == SDLK_KP_ENTER
+                          || ev.key.keysym.sym == SDLK_TAB)))
+                    xbox_InputSdlEvent(&ev);
                 switch (ev.type) {
                 case SDL_QUIT:
                     quit = 1;
@@ -197,6 +236,11 @@ int thug_host_window_main(int (*guest_main)(void))
                         nv2a_pb_gl_drawable_changed();
                         thug_overlay_window_resized(win);
                     }
+                    if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
+                            || ev.window.event == SDL_WINDOWEVENT_MOVED
+                            || ev.window.event == SDL_WINDOWEVENT_MAXIMIZED
+                            || ev.window.event == SDL_WINDOWEVENT_RESTORED)
+                        remember_window(win);
                     /* "Mute in background" follows the keyboard focus. */
                     if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
                         thug_settings_set_focused(0);
@@ -228,11 +272,26 @@ int thug_host_window_main(int (*guest_main)(void))
             if (fs >= 0)
                 set_fullscreen(win, fs);
         }
+        /* "Restart to apply changes": the window and the settings as they
+         * are, then the same process starts over (restart.h). */
+        if (thug_overlay_take_restart_request()) {
+            remember_window(win);
+            if (thug_settings_save() != 0)
+                fprintf(stderr, "[thug] could not write %s\n", thug_settings_path());
+            thug_restart_exec();            /* returns only if it failed */
+        }
+        /* After the events, on their thread: Escape changes meaning only
+         * while it is up, and nothing can press it in between. */
+        thug_keyboard_controls_update();
         update_cursor(win);
         update_title(win, &t_title, &flips_title);
     }
 
     fprintf(stderr, "[thug] %s\n", quit ? "window closed" : "guest returned");
+    /* The window as the player leaves it, for next time. */
+    remember_window(win);
+    if (thug_settings_save() != 0)
+        fprintf(stderr, "[thug] could not write %s\n", thug_settings_path());
     if (quit) {
         /* The executor's thread may be inside a swap on this window, and
          * lifted code cannot be stopped mid-flight, so nothing is torn down:

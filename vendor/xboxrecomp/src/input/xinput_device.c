@@ -13,6 +13,7 @@
 #include "xinput_xbox.h"
 #include "keyboard.h"
 #include "mkb_input.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -246,6 +247,7 @@ static void refresh_controllers_locked(void)
             SDL_GameControllerClose(g_pads[slot]);
             g_pads[slot] = NULL;
             g_controller_connected[slot] = FALSE;
+            fprintf(stderr, "  [INPUT] port %d: controller disconnected\n", slot + 1);
         }
     }
 
@@ -267,17 +269,28 @@ static void refresh_controllers_locked(void)
             break;
         controller = SDL_GameControllerOpen(i);
         if (controller) {
+            const char *name = SDL_GameControllerName(controller);
             g_pads[slot] = controller;
             g_controller_connected[slot] = TRUE;
+            fprintf(stderr, "  [INPUT] port %d: %s connected\n", slot + 1,
+                    name ? name : "controller");
         }
     }
 }
 
+/* The pad on a port, or NULL. Without the main pump the caller's thread is
+ * the only one in SDL, so it opens and closes pads as it finds them. With it,
+ * the pumping thread does that (xbox_InputSdlRefreshControllers, on SDL's
+ * device events), and this only reads: opening a pad walks SDL's device list
+ * by index, which the pumping thread rebuilds during a hotplug, and an open
+ * from here at that moment corrupted the heap (sdl2-compat on SDL3, a pad
+ * plugged in mid-game). */
 static SDL_GameController *controller_for_port_locked(DWORD port)
 {
     SDL_GameController *controller = g_pads[port];
 
-    if (!controller || !SDL_GameControllerGetAttached(controller)) {
+    if ((!controller || !SDL_GameControllerGetAttached(controller))
+            && !SDL_AtomicGet(&g_main_pump)) {
         refresh_controllers_locked();
         controller = g_pads[port];
     }
@@ -305,6 +318,8 @@ int xbox_InputAnyOpen(void)
     SDL_LockJoysticks();
     for (int i = 0; i < XBOX_MAX_CONTROLLERS; i++) {
         if (g_pads[i] && !SDL_GameControllerGetAttached(g_pads[i])) {
+            if (SDL_AtomicGet(&g_main_pump))
+                continue;               /* the pumping thread closes it */
             SDL_GameControllerClose(g_pads[i]);
             g_pads[i] = NULL;
             g_controller_connected[i] = FALSE;
@@ -313,6 +328,14 @@ int xbox_InputAnyOpen(void)
     }
     SDL_UnlockJoysticks();
     return any;
+}
+
+/* Declared in keyboard_sdl.h (which needs SDL_Event, so not included here). */
+void xbox_InputSdlRefreshControllers(void)
+{
+    SDL_LockJoysticks();
+    refresh_controllers_locked();
+    SDL_UnlockJoysticks();
 }
 
 void xbox_InputInit(void)

@@ -23,10 +23,11 @@ build/bin/thug       # play
 Run `thug`. It looks for its files in a `game/` folder next to it (or in the
 tree above it, so `build/bin/thug` finds the repository's `game/`):
 
-- **Only the disc image** (`game/*.iso`, a Redump dump or a trimmed XISO): on
-  first launch the game unpacks it into `game/` (about 3.4 GB, with a
-  progress window), checks that `default.xbe` is the supported USA build, and
-  starts. The image can stay or go afterwards.
+- **Only the disc image** (a Redump dump or a trimmed XISO, `.iso`), either
+  beside `thug` or in `game/`: on first launch the game creates `game/` if
+  need be, unpacks the image into it (about 3.4 GB, with a progress window),
+  checks that `default.xbe` is the supported USA build, and starts. The image
+  can stay or go afterwards.
 - **The unpacked files** (`game/default.xbe` and `game/data/`, with or
   without the image): `default.xbe` is checked and the game starts.
 - **Neither**, or another version of the game: it says so and exits.
@@ -38,34 +39,50 @@ The game's log goes to `~/.local/state/thug-pc-port/thug.log` (the previous
 run's is `thug.prev.log`) unless you redirect stderr yourself;
 `THUG_LOG=<file>` picks another file, `THUG_LOG=-` keeps it on stderr.
 
-In game, **F1** (or Back+Start held together on a pad) opens the settings
+In game, **F1** (or **L3 + R3**, both sticks clicked, on a pad) opens the settings
 overlay:
-- **Display:** resolution, antialiasing (2x, 4x or 8x MSAA), brightness,
-  fullscreen, vsync, a frame rate limit, anisotropic filtering, widescreen.
+- **Display:** aspect ratio (4:3, 16:10 or 16:9; the field of view widens
+  to fit), resolution (common sizes for the chosen aspect, or native),
+  antialiasing (2x, 4x or 8x MSAA), brightness, fullscreen, vsync, a frame
+  rate limit, anisotropic filtering.
 - **Audio:** volume, and muting while the window is in the background.
 - **Controller:** vibration strength.
 - **Game:** the original 60 Hz timing, an FPS counter.
 - Live performance figures, and **Restore defaults**.
 
-Changes apply at once (widescreen at the next start) and are saved to
+Changes apply at once, except a switch between 4:3 and a widescreen aspect
+(the game lays out its menus and HUD at start-up): then a **Restart to apply
+changes** button appears, which asks first, since progress since your last
+save is lost. Settings are saved to
 `~/.config/thug-pc-port/settings.ini` when the overlay closes. While it is
 open the game gets no input and the pad does not vibrate. In a window, the
-mouse cursor hides after two seconds without moving.
+mouse cursor hides after two seconds without moving. The window reopens as
+you left it: its size, whether it was maximised or fullscreen, and its
+position where the desktop allows a program to choose it (X11, Windows; on
+Wayland the desktop places windows itself).
+
+The keyboard drives the menus as player one's pad, with or without a
+controller plugged in (a pad and the keys work together); it reads keys only
+while the game's window has the focus. `RECOMP_KEYBOARD=0` turns it off.
 
 The variables below override the saved settings for one run.
 
 | Key or switch | Effect |
 |---|---|
+| Enter or Space | A (accept) |
+| Backspace or Tab | B (back) |
+| Escape | START (pause) while skating; B (back) in the main menu's screens and the pause menu, so it also leaves the pause menu |
+| W A S D or arrow keys | D-pad |
 | F11 or Alt+Enter | Toggle borderless fullscreen |
 | F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` and the log, for a bug report |
 | `THUG_FULLSCREEN=1` | Start fullscreen |
-| `THUG_WIDESCREEN=0` | 4:3 instead of 16:9 |
-| `THUG_RES_SCALE=<x>` | Internal resolution, as a multiple of 480 lines (default: your desktop's height) |
+| `THUG_ASPECT=<ratio>` | Aspect ratio: `16:9` (default), `16:10` or `4:3`. The game's field of view follows (Hor+); switching between 4:3 and a wide ratio changes the menu and HUD layout at the next start. `THUG_WIDESCREEN=0` still means 4:3 |
+| `THUG_RES_SCALE=<x>` | Internal resolution, as a multiple of 480 lines (default 2.25: 1920x1080 at 16:9; 0 = your desktop's height) |
 | `THUG_VSYNC=0` | Don't wait for the display |
-| `THUG_FPS_LIMIT=<n>` | Cap the frame rate (0 = off) |
+| `THUG_FPS_LIMIT=<n>` | Cap the frame rate (default 60; 0 = off) |
 | `THUG_SHOW_FPS=1` | FPS counter in the corner |
 | `THUG_ANISO=<n>` | Anisotropic filtering (default 16) |
-| `THUG_MSAA=<n>` | Antialiasing: 1 (off, default), 2, 4 or 8 samples |
+| `THUG_MSAA=<n>` | Antialiasing: 1 (off), 2, 4 (default) or 8 samples |
 | `THUG_BRIGHTNESS=<b>` | Gamma on the final image, 0.5 to 2 (default 1) |
 | `THUG_VOLUME=<n>` | Master volume, 0 to 100 (default 100) |
 | `THUG_MUTE_UNFOCUSED=1` | Silent while the window is in the background |

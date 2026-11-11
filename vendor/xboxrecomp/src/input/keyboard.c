@@ -147,8 +147,49 @@ static int row_control(const xbox_key_row *r)
     return -1;
 }
 
+/* A port's own bindings (xbox_InputKeyboardSetLayer), else the map. A layer
+ * is written while it is not in force and only read after; the layer in
+ * force is one int, so choosing it needs no lock against the poll. */
+static InputBindings s_layer_b[XBOX_KEYBOARD_LAYERS];
+static volatile int  s_layer_set[XBOX_KEYBOARD_LAYERS];
+static volatile int  s_layer;
+
+void xbox_InputKeyboardSetLayer(int layer, const InputBindings *b)
+{
+    if (layer < 0 || layer >= XBOX_KEYBOARD_LAYERS)
+        return;
+    s_layer_set[layer] = 0;
+    if (b) {
+        s_layer_b[layer] = *b;
+        s_layer_set[layer] = 1;
+    }
+}
+
+void xbox_InputKeyboardUseLayer(int layer)
+{
+    if (layer >= 0 && layer < XBOX_KEYBOARD_LAYERS)
+        s_layer = layer;
+}
+
+int xbox_InputKeyboardLayer(void)
+{
+    return s_layer;
+}
+
+void xbox_InputKeyboardSetBindings(const InputBindings *b)
+{
+    s_layer = 0;
+    xbox_InputKeyboardSetLayer(0, b);
+}
+
 void xbox_InputKeyboardBindings(InputBindings *b)
 {
+    int layer = s_layer;
+
+    if (s_layer_set[layer]) {
+        *b = s_layer_b[layer];
+        return;
+    }
     memset(b, 0, sizeof *b);
     /* Full deflection on a diagonal, as this map has always given. */
     b->diagonal = INPUT_DIAGONAL_FULL;
@@ -167,10 +208,13 @@ void xbox_InputKeyboardState(XBOX_INPUT_STATE *out)
     InputBindings b;
     uint8_t down[INPUT_KEY_COUNT];
 
-    /* One snapshot of the table, so a poll sees one set of keys. */
+    /* The bindings before the keys: a port changes layer only while the
+     * keys it moves are up, so a key held in this snapshot was pressed under
+     * the layer read here, or one poll later. One snapshot of the table, so
+     * a poll sees one set of keys. */
+    xbox_InputKeyboardBindings(&b);
     for (int vk = 0; vk < INPUT_KEY_COUNT; vk++)
         down[vk] = s_key_down[vk];
-    xbox_InputKeyboardBindings(&b);
 
     memset(out, 0, sizeof *out);
     /* Buttons set their bit, analog keys read 255 (a title that reads
