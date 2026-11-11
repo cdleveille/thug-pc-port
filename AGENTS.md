@@ -55,9 +55,10 @@ shows something, the game's own code put it there.
 | Path | What |
 |---|---|
 | `src/main.c` | Host entry: loads the XBE, maps memory, boots the kernel shim, enters the guest. Crash reporter for both platforms. |
+| `src/host/host_sleep.c` | The frame cap's sleep to a deadline: `clock_nanosleep` on Linux, a high-resolution waitable timer on Windows |
 | `src/host/launch.c` | Start-up: the log file, and the game files (found next to the executable, unpacked on first launch with a progress window from a disc image in `game/` or beside the executable (creating `game/`), refused with a message box when absent or the wrong version) |
 | `src/host/game_data.c` | Finding the game directory, the XBE check, the XDVDFS reader and unpacking; no SDL, shared with `thug-extract` |
-| `src/host/restart.c` | The overlay's "Restart to apply changes": the process execs itself (same PID) with the arguments and environment it was started with, its descriptors closed and stdio handed back so the new run sets up its own log |
+| `src/host/restart.c` | The overlay's "Restart to apply changes": the process execs itself (same PID) with the arguments and environment it was started with, its descriptors closed and stdio handed back so the new run sets up its own log; on Windows `CreateProcessW` with the same, then this process ends |
 | `src/host/controls.c` | The keyboard's menu bindings (Enter/Space A, Backspace/Tab B, WASD/arrows D-pad; Esc START while skating and B in the menus, from the game's current level and `GameIsPaused`), through the toolkit's keyboard layer and its binding layers |
 | `src/host/window_icon.c` | The window icon (`thug.png`, embedded at build time by `scripts/embed_icon.py`) and the app ID `thug-pc-port` |
 | `src/tools/thug_extract.c` | `build/bin/thug-extract`: the same check and unpack as a command, for `scripts/build.sh` (lifting needs `default.xbe` before the game can be built) |
@@ -67,6 +68,8 @@ shows something, the game's own code put it there.
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
+| `scripts/build.bat` | Windows: `scripts/build.sh` from any shell, run in MSYS2's CLANG64 environment; `--setup` installs the toolchain |
+| `scripts/copy_runtime_dlls.cmake` | Windows: copies the toolchain DLLs `thug.exe` needs next to it after each link (SDL3, which sdl2-compat loads at run time, included) |
 | `docs/` | Title notes, bring-up log, override log, Windows handoff (`WINDOWS.md`) |
 | `vendor/xboxrecomp` | The toolkit (vendored, with this port's changes) |
 | `vendor/imgui` | Dear ImGui for the F1 overlay (vendored, the files the build uses) |
@@ -203,13 +206,23 @@ must not touch the player's files points `XDG_CONFIG_HOME` and
 
 ## Environment
 
-- Linux x86-64 has been the development host so far: clang or GCC, CMake
-  3.20+, Ninja, SDL2, libepoxy, Python 3.10+ with `capstone`.
-- Windows 11 is next (2026-11-11), and nothing has been built there yet. The
-  plan is the same SDL2 + OpenGL renderer under MinGW-w64 (MSYS2 CLANG64),
-  not the toolkit's D3D11 backend: THUG renders through the pushbuffer
-  executor, not the D3D8 calls that backend intercepts. See
-  `docs/WINDOWS.md`.
+- Linux x86-64: clang or GCC, CMake 3.20+, Ninja, SDL2, libepoxy, Python
+  3.10+ with `capstone`.
+- Windows 10/11 x64 (since 2026-11-11): the same SDL2 + OpenGL renderer,
+  built in the MSYS2 **CLANG64** shell (packages in the README), not the
+  toolkit's D3D11 backend: THUG renders through the pushbuffer executor, not
+  the D3D8 calls that backend intercepts. The workflow above is the same
+  there (`scripts/build.sh`, `scripts/regen.sh`) in a CLANG64 shell;
+  `scripts\build.bat` runs `build.sh` from any other shell (the owner's way),
+  and from a non-MSYS2 shell a single command runs as
+  `MSYSTEM=CLANG64 C:\msys64\usr\bin\bash.exe -lc "cd <repo> && ..."`.
+  SDL2 there is sdl2-compat over SDL3 (MSYS2 replaced SDL2 with it). `thug.exe` is a windowed
+  program: its log is `%LOCALAPPDATA%\thug-pc-port\thug.log` unless stderr
+  is redirected (an MSYS2 terminal's stderr is a pipe, so it stays there),
+  settings `%APPDATA%\thug-pc-port\settings.ini`. A test that must not touch
+  the player's files points `APPDATA` and `LOCALAPPDATA` at scratch folders.
+  `THUG_DEBUG_ATTACH` is Linux-only; MSYS2's `gdb -p <pid>` attaches to the
+  game as it is. State and open items: `docs/WINDOWS.md`.
 - The toolkit's D3D8 translation (`vendor/xboxrecomp/src/d3d`, D3D11 on
   Windows, OpenGL elsewhere) is not THUG's path. A rendering bug is in the
   executor (`nv2a_pb_exec.c`) or the port's renderer (`src/gpu/nv2a_pb_gl.c`).

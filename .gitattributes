@@ -1,0 +1,4 @@
+# Windows batch files need CRLF line endings for cmd.exe (labels and goto can
+# misbehave without them), whatever core.autocrlf says.
+*.bat text eol=crlf
+*.cmd text eol=crlf

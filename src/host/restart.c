@@ -112,10 +112,95 @@ void thug_restart_exec(void)
     fprintf(stderr, "[thug] could not restart: %s\n", strerror(err));
 }
 
-#else /* _WIN32: not yet */
+#else /* _WIN32 */
 
-void thug_restart_init(int argc, char **argv) { (void)argc; (void)argv; }
-int  thug_restart_supported(void) { return 0; }
-void thug_restart_exec(void) { }
+/* Windows has no exec: a new process starts with the same executable,
+ * command line and environment, then this one ends. The PID changes; Steam
+ * follows a game's child processes, so it still sees one game running. */
+#include <windows.h>
+
+static wchar_t  s_exe_w[32768];
+static wchar_t *s_cmdline;      /* writable copy: CreateProcessW may edit it */
+static wchar_t *s_env_block;    /* the environment as the player started us */
+
+void thug_restart_init(int argc, char **argv)
+{
+    const wchar_t *cl = GetCommandLineW();
+    wchar_t *env = GetEnvironmentStringsW();
+    DWORD n;
+
+    (void)argc;
+    (void)argv;
+    n = GetModuleFileNameW(NULL, s_exe_w, (DWORD)(sizeof s_exe_w / sizeof s_exe_w[0]));
+    if (n == 0 || n >= sizeof s_exe_w / sizeof s_exe_w[0])
+        s_exe_w[0] = 0;
+    if (cl) {
+        size_t len = wcslen(cl) + 1;
+        s_cmdline = (wchar_t *)malloc(len * sizeof *s_cmdline);
+        if (s_cmdline)
+            memcpy(s_cmdline, cl, len * sizeof *s_cmdline);
+    }
+    if (env) {
+        const wchar_t *p = env;
+        size_t len;
+        while (*p)                      /* NAME=value\0 ... \0 */
+            p += wcslen(p) + 1;
+        len = (size_t)(p - env) + 1;
+        s_env_block = (wchar_t *)malloc(len * sizeof *s_env_block);
+        if (s_env_block)
+            memcpy(s_env_block, env, len * sizeof *s_env_block);
+        FreeEnvironmentStringsW(env);
+    }
+}
+
+int thug_restart_supported(void)
+{
+    return s_exe_w[0] && s_cmdline && s_env_block;
+}
+
+void thug_restart_exec(void)
+{
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HANDLE std_h[3];
+    BOOL ok;
+    int i, inherit = 0;
+
+    if (!thug_restart_supported())
+        return;
+    fprintf(stderr, "[thug] restarting to apply the settings\n");
+    /* The new run gets the stdout and stderr this one was started with (a
+     * console, or a file someone redirected to), and sets up its own log. */
+    thug_launch_restore_stdio();
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    std_h[0] = GetStdHandle(STD_INPUT_HANDLE);
+    std_h[1] = GetStdHandle(STD_OUTPUT_HANDLE);
+    std_h[2] = GetStdHandle(STD_ERROR_HANDLE);
+    for (i = 0; i < 3; i++)
+        if (std_h[i] && std_h[i] != INVALID_HANDLE_VALUE
+                && SetHandleInformation(std_h[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+            inherit = 1;
+    if (inherit) {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = std_h[0];
+        si.hStdOutput = std_h[1];
+        si.hStdError = std_h[2];
+    }
+    memset(&pi, 0, sizeof pi);
+    ok = CreateProcessW(s_exe_w, s_cmdline, NULL, NULL, inherit ? TRUE : FALSE,
+                        CREATE_UNICODE_ENVIRONMENT, s_env_block, NULL, &si, &pi);
+    if (!ok) {
+        DWORD err = GetLastError();
+        fprintf(stderr, "[thug] could not restart: error %lu\n", (unsigned long)err);
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    /* As closing the window does (host_window.c): lifted code cannot be
+     * stopped mid-flight, so nothing is torn down. */
+    fflush(NULL);
+    TerminateProcess(GetCurrentProcess(), 0);
+}
 
 #endif

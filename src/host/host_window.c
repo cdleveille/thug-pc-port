@@ -1,6 +1,6 @@
 /**
  * host_window.c -- the game's window loop when the GPU renderer owns the
- * window (POSIX).
+ * window (Linux and Windows).
  *
  * Same shape as the toolkit's xbox_HostWindowMain (src/video/fb_present_sdl.c),
  * which this replaces when src/gpu/nv2a_pb_gl.c has opened a visible window:
@@ -18,17 +18,19 @@
  * next two frames for a glitch report (nv2a_pb_gl_request_capture). Closing
  * the window ends the process.
  */
-#if !defined(_WIN32)
-
 #include <SDL.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
 #include <time.h>
+#if defined(_WIN32)
+#include <windows.h>                    /* TerminateProcess */
+#else
+#include <sys/resource.h>
 #include <unistd.h>
+#endif
 
 #include "host_window.h"
 #include "controls.h"
@@ -72,15 +74,19 @@ static int start_guest(void)
 {
     pthread_attr_t attr;
     pthread_t th;
-    struct rlimit rl;
     size_t stack = 64u << 20;
     int rc;
 
     /* Lifted code recurses on the native stack: at least the main thread's
      * limit, and no less than 64 MB. */
-    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
-            && rl.rlim_cur > stack)
-        stack = (size_t)rl.rlim_cur;
+#if !defined(_WIN32)
+    {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
+                && rl.rlim_cur > stack)
+            stack = (size_t)rl.rlim_cur;
+    }
+#endif
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, stack);
     rc = pthread_create(&th, &attr, guest_thread, NULL);
@@ -296,11 +302,14 @@ int thug_host_window_main(int (*guest_main)(void))
         /* The executor's thread may be inside a swap on this window, and
          * lifted code cannot be stopped mid-flight, so nothing is torn down:
          * flush what is buffered and leave. The title's own file writes have
-         * already gone through write(2). */
+         * already gone through write(2) (WriteFile on Windows). */
         fflush(NULL);
+#if defined(_WIN32)
+        /* Not ExitProcess: it would run every DLL's detach (the GL driver's
+         * among them) after killing threads that may hold their locks. */
+        TerminateProcess(GetCurrentProcess(), 0);
+#endif
         _exit(0);
     }
     return s_guest_rc;
 }
-
-#endif /* !_WIN32 */

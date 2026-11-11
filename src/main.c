@@ -180,12 +180,25 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Nothing handled it: the process is going down. Point the player at the
+ * log (the console, or a message box when started from Explorer). */
+static LONG WINAPI unhandled_filter(PEXCEPTION_POINTERS ep)
+{
+    fprintf(stderr, "[CRASH] unhandled exception 0x%08lX at host RIP=0x%llX\n",
+            (unsigned long)ep->ExceptionRecord->ExceptionCode,
+            (unsigned long long)ep->ContextRecord->Rip);
+    fflush(stderr);
+    thug_launch_crash_notice();
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 static void install_fault_handler(void)
 {
     /* Load symbols now, not at fault time, when allocating is unsafe. */
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
+    SetUnhandledExceptionFilter(unhandled_filter);
 }
 
 #else /* POSIX */
@@ -326,6 +339,16 @@ static void thug_set_default_env(void)
      * recomp_manual.c gives the game's camera the exact aspect. */
     if (thug_aspect_is_wide(g_thug_settings.aspect))
         set_default("RECOMP_WIDESCREEN", "1");
+#if defined(_WIN32)
+    /* RECOMP_WIN_PLACEHOLDER: reserve the guest's whole 4 GB window in one
+     * placeholder (VirtualAlloc2) and carve RAM, the contiguous window at
+     * 0x80000000 and the apertures out of it. The GPU renderer opens its
+     * window and loads the GL driver before the guest maps its memory, so
+     * the driver's allocations can otherwise sit where the contiguous window
+     * belongs. The POSIX side reserves the whole window unconditionally for
+     * the same reason (docs/NOTES.md, "Toolkit changes"). */
+    set_default("RECOMP_WIN_PLACEHOLDER", "1");
+#endif
 }
 
 /* ── Boot ──────────────────────────────────────────────────── */
@@ -459,9 +482,6 @@ int main(int argc, char **argv)
 
     install_fault_handler();
 
-#if defined(_WIN32)
-    return thug_guest_main();
-#else
     /* The GPU renderer (src/gpu): SDL video and the GL context are created
      * here, on the main thread, before the window loop takes it over; the
      * executor's poll thread only makes the context current to draw. Returns
@@ -475,6 +495,11 @@ int main(int argc, char **argv)
             return thug_host_window_main(thug_guest_main);
     }
 
+#if defined(_WIN32)
+    /* Headless, or the CPU rasteriser: the guest on this thread (its stack is
+     * the executable's 8 MB reserve, as a Linux main thread's). */
+    return thug_guest_main();
+#else
     /* CPU rasteriser: with RECOMP_FB_WINDOW set this opens the framebuffer
      * window on the main thread and runs the guest on a pthread; otherwise it
      * calls straight through. */

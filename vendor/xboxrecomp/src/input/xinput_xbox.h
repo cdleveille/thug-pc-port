@@ -123,10 +123,13 @@ void xbox_InputSetBlocked(int on);
  */
 void xbox_InputSetRumbleScale(float scale);
 
-#if !defined(_WIN32)
 /* The POSIX SDL presenter owns event pumping while its main-thread window is
- * active, and keeps SDL alive at shutdown while controller handles are open. */
+ * active. On Windows the pads are XInput's, read on every call from any
+ * thread, so this records nothing there: it exists so that a host with an
+ * SDL window (keyboard_sdl.c) runs one main loop on both. */
 void xbox_InputSetMainPump(int on);
+#if !defined(_WIN32)
+/* Keeps SDL alive at shutdown while controller handles are open. */
 int xbox_InputAnyOpen(void);
 #endif
 

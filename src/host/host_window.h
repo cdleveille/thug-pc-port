@@ -1,6 +1,6 @@
 /**
  * host_window.h -- the game's window loop when the GPU renderer owns the
- * window (POSIX).
+ * window (Linux and Windows).
  */
 #ifndef THUG_HOST_WINDOW_H
 #define THUG_HOST_WINDOW_H

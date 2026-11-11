@@ -46,6 +46,12 @@
 #include "nv2a_backend.h"
 #if defined(_WIN32)
 #include <windows.h>
+#endif
+/* Keyed on the compiler, not the target, as XBOX_THREAD_LOCAL is
+ * (platform/xbox_winnt.h): MinGW is _WIN32 but GCC or clang, which ignore
+ * __declspec(thread) with only a warning, and the CPU rasteriser's workers
+ * then shared one DXT block cache. */
+#if defined(_MSC_VER)
 #define NV_TLS __declspec(thread)
 #else
 #define NV_TLS __thread
@@ -3314,6 +3320,7 @@ static void xf_rows_parallel(const XfTri *T, int ntris, long px,
     int n = raster_pool_size(), k;
 
     if (n <= 1 || px < NV_RASTER_MT_MIN_PIXELS) {
+        s_raster_last_workers = 1;            /* as the pthreads branch */
         for (k = 0; k < ntris; k++)
             xf_rows(&T[k], T[k].miny, 1, total);
         return;

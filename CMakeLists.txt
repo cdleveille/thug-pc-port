@@ -78,6 +78,7 @@ add_executable(thug
     src/gpu/xbr.c
     src/host/controls.c
     src/host/game_data.c
+    src/host/host_sleep.c
     src/host/host_window.c
     src/host/launch.c
     src/host/restart.c
@@ -103,31 +104,33 @@ target_include_directories(thug PRIVATE
 set_source_files_properties(src/host/controls.c PROPERTIES
     INCLUDE_DIRECTORIES "${XBOXRECOMP_DIR}/src")
 
-# GPU renderer: OpenGL 3.3 through SDL2 + libepoxy, as the toolkit's POSIX
-# graphics already use. On Windows the file compiles to a stub for now.
-if(NOT WIN32)
-    find_package(SDL2 REQUIRED)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(THUG_EPOXY REQUIRED epoxy)
-    target_link_libraries(thug PRIVATE SDL2::SDL2 ${THUG_EPOXY_LINK_LIBRARIES})
-    target_include_directories(thug PRIVATE ${THUG_EPOXY_INCLUDE_DIRS})
+# GPU renderer: OpenGL 3.3 through SDL2 + libepoxy, on Linux and Windows
+# (MSYS2 CLANG64 provides both; docs/WINDOWS.md). The toolkit's own D3D11
+# path is not THUG's: the game renders through the pushbuffer executor.
+find_package(SDL2 REQUIRED)
+find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
+pkg_check_modules(THUG_EPOXY REQUIRED epoxy)
+target_link_libraries(thug PRIVATE SDL2::SDL2 ${THUG_EPOXY_LINK_LIBRARIES} Threads::Threads)
+target_include_directories(thug PRIVATE ${THUG_EPOXY_INCLUDE_DIRS})
+# SDL is not handed main(): main.c is an ordinary entry point everywhere.
+target_compile_definitions(thug PRIVATE SDL_MAIN_HANDLED)
 
-    # The in-game settings overlay (F1): Dear ImGui (vendored), drawn
-    # by the GPU renderer through epoxy.
-    set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui")
-    if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
-        message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. It is part "
-                            "of this repository; is the checkout complete?")
-    endif()
-    target_sources(thug PRIVATE
-        src/ui/overlay.cpp
-        src/ui/imgui_gl_backend.cpp
-        ${IMGUI_DIR}/imgui.cpp
-        ${IMGUI_DIR}/imgui_draw.cpp
-        ${IMGUI_DIR}/imgui_tables.cpp
-        ${IMGUI_DIR}/imgui_widgets.cpp)
-    target_include_directories(thug PRIVATE ${IMGUI_DIR})
+# The in-game settings overlay (F1): Dear ImGui (vendored), drawn
+# by the GPU renderer through epoxy.
+set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui")
+if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
+    message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. It is part "
+                        "of this repository; is the checkout complete?")
 endif()
+target_sources(thug PRIVATE
+    src/ui/overlay.cpp
+    src/ui/imgui_gl_backend.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp)
+target_include_directories(thug PRIVATE ${IMGUI_DIR})
 
 target_link_libraries(thug PRIVATE xboxrecomp)
 
@@ -156,6 +159,32 @@ if(WIN32)
         target_link_options(thug PRIVATE /LARGEADDRESSAWARE)
         # Generated chunks are large; raise the object section limit.
         target_compile_options(thug PRIVATE /bigobj)
+    else()
+        # Every thread's stack reserve, as a Linux thread's default: lifted
+        # code recurses on the native stack, and the toolkit starts the
+        # title's threads with CreateThread's default (MinGW's is 2 MB). The
+        # guest's main thread asks for 64 MB itself (host_window.c).
+        target_link_options(thug PRIVATE "-Wl,--stack,8388608")
+    endif()
+    if(MINGW)
+        # A windowed program: started from Explorer, no console window opens
+        # beside the game. The log goes to %LOCALAPPDATA%\thug-pc-port\thug.log
+        # (src/host/launch.c); a terminal it was started from still gets the
+        # player's messages, and redirecting stderr still works.
+        option(THUG_WINDOWS_CONSOLE
+               "Build thug.exe as a console program (a console window opens with it)" OFF)
+        if(NOT THUG_WINDOWS_CONSOLE)
+            target_link_options(thug PRIVATE -mwindows)
+        endif()
+        # The toolchain's DLLs (SDL2, libepoxy, libc++, winpthread) beside the
+        # game, so build/bin/thug.exe starts from Explorer too.
+        get_filename_component(THUG_TOOLCHAIN_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+        add_custom_command(TARGET thug POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:thug>
+                    "-DSEARCH=${THUG_TOOLCHAIN_BIN}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/copy_runtime_dlls.cmake"
+            COMMENT "Copying the runtime DLLs next to thug.exe"
+            VERBATIM)
     endif()
 else()
     # The toolkit's platform target already links Threads and libm.

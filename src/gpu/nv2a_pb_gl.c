@@ -35,22 +35,23 @@
 #include <string.h>
 #include <sys/stat.h>                 /* [thug] mkdir, for captures */
 #include <time.h>
+#if defined(_WIN32)
+#include <direct.h>                   /* [thug] _mkdir */
+#define mkdir_one(p) _mkdir(p)
+#else
+#define mkdir_one(p) mkdir((p), 0755)
+#endif
 
 #include "nv2a_backend.h"
 #include "nv2a_pb_gl.h"
+#include "host/host_sleep.h"       /* [thug] the frame cap's sleep */
+#include "host/launch.h"           /* [thug] the state folder, for captures */
 #include "host/window_icon.h"
 #include "ui/settings.h"           /* [thug] THUG_WINDOW_POS_UNSET */
 #include "../d3d/d3d8_swizzle.h"   /* [thug] swizzled vs linear formats */
 
-#if defined(_WIN32)
-/* The Windows build keeps the CPU rasteriser for now: this file exists there
- * only so the symbol resolves, and nv2a_pb_gl_init() reports "not available". */
-int nv2a_pb_gl_init(void)
-{
-    return 0;
-}
-#else
-
+/* [thug] One renderer on every host: SDL2 + OpenGL 3.3 core through epoxy,
+ * on Windows as on Linux (docs/WINDOWS.md). */
 #include <SDL.h>
 #include <epoxy/gl.h>
 #include <pthread.h>
@@ -3401,8 +3402,9 @@ static void dump_target(GlTarget *t)
  * texture: linear or swizzled, and whether it is a render target) followed by
  * the probe's full record ([GLPROBE] lines: state, vertices, coordinates,
  * combiner); at each flip every render target is written as PPM to
- * <state dir>/captures/<time>/ ($XDG_STATE_HOME/thug-pc-port, else
- * ~/.local/state/thug-pc-port). */
+ * <state dir>/captures/<time>/ (thug_launch_state_dir: $XDG_STATE_HOME/
+ * thug-pc-port, else ~/.local/state/thug-pc-port; %LOCALAPPDATA%\thug-pc-port
+ * on Windows). */
 static volatile int s_capture_req;
 static char     s_capture_dir[1024];
 
@@ -3410,29 +3412,32 @@ void nv2a_pb_gl_request_capture(void) { s_capture_req = 1; }
 
 static int capture_begin(void)
 {
-    const char *xdg = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
     char stamp[32];
     time_t now = time(NULL);
     struct tm tmv;
     size_t i;
 
-    if (xdg && *xdg)
-        snprintf(s_capture_dir, sizeof s_capture_dir, "%s/thug-pc-port/captures", xdg);
-    else if (home && *home)
-        snprintf(s_capture_dir, sizeof s_capture_dir, "%s/.local/state/thug-pc-port/captures", home);
+    if (thug_launch_state_dir(s_capture_dir, sizeof s_capture_dir))
+        strncat(s_capture_dir, "/captures", sizeof s_capture_dir - strlen(s_capture_dir) - 1);
     else
         snprintf(s_capture_dir, sizeof s_capture_dir, "captures");
+#if defined(_WIN32)
+    localtime_s(&tmv, &now);
+#else
     localtime_r(&now, &tmv);
+#endif
     strftime(stamp, sizeof stamp, "/%Y%m%d-%H%M%S", &tmv);
     strncat(s_capture_dir, stamp, sizeof s_capture_dir - strlen(s_capture_dir) - 1);
     for (i = 1; s_capture_dir[i]; i++) {               /* mkdir -p */
-        if (s_capture_dir[i] == '/') {
+        if ((s_capture_dir[i] == '/' || s_capture_dir[i] == '\\')
+                && s_capture_dir[i - 1] != ':') {      /* not a drive's root */
+            char c = s_capture_dir[i];
             s_capture_dir[i] = 0;
-            mkdir(s_capture_dir, 0755);
-            s_capture_dir[i] = '/';
+            mkdir_one(s_capture_dir);
+            s_capture_dir[i] = c;
         }
     }
-    if (mkdir(s_capture_dir, 0755) != 0 && errno != EEXIST) {
+    if (mkdir_one(s_capture_dir) != 0 && errno != EEXIST) {
         fprintf(stderr, "[CAPTURE] cannot create %s: %s\n", s_capture_dir, strerror(errno));
         return 0;
     }
@@ -3627,7 +3632,7 @@ static void present(GlTarget *t)
             ahead = (long long)(next.tv_sec - now.tv_sec) * 1000000000LL
                   + (next.tv_nsec - now.tv_nsec);
             if (ahead > 0 && ahead <= step)
-                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+                thug_sleep_until(&next);  /* precise on Windows too */
             else
                 next = now;           /* late, or the first frame: restart */
             next.tv_nsec += step;
@@ -4061,11 +4066,14 @@ int nv2a_pb_gl_init(void)
     /* [thug] Let the driver run its own work on a thread of its own: the
      * executor's thread both decodes the pushbuffer and submits every draw,
      * and the driver's share of that is large (NVIDIA's threaded
-     * optimisations; Mesa's glthread). Explicit settings win. */
+     * optimisations; Mesa's glthread). Explicit settings win. Linux only:
+     * on Windows the driver's control panel owns that setting. */
+#if !defined(_WIN32)
     if (!getenv("THUG_GL_NO_DRIVER_THREAD")) {
         setenv("__GL_THREADED_OPTIMIZATIONS", "1", 0);
         setenv("mesa_glthread", "true", 0);
     }
+#endif
     if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "[PBGL] SDL_Init: %s\n", SDL_GetError());
         return 0;
@@ -4306,5 +4314,3 @@ int nv2a_pb_gl_init(void)
     SDL_GL_MakeCurrent(s_win, NULL);
     return 1;
 }
-
-#endif /* !_WIN32 */

@@ -8,14 +8,23 @@ emulate anything: the game's own code runs natively.
 **Status: early bring-up.** On Linux, the recompiled game boots with sound
 and controller support, navigates its menus and plays free skate. An OpenGL
 renderer draws it at your display's resolution, in widescreen, with the frame
-rate unlocked. See [docs/BRINGUP.md](docs/BRINGUP.md) for what works and
-what doesn't.
+rate unlocked. The Windows build runs the same renderer and reaches free
+skate in scripted runs; it still needs a full playtest. See
+[docs/BRINGUP.md](docs/BRINGUP.md) for what works and what doesn't.
 
-To build and play, put your disc image in `game/`, then:
+To build and play, put your disc image in `game/`, then on Linux:
 
 ```
 scripts/build.sh     # rebuild whatever is out of date
 build/bin/thug       # play
+```
+
+On Windows, from any shell (cmd, PowerShell):
+
+```
+scripts\build.bat --setup    # the first time: installs the toolchain, then builds
+scripts\build.bat            # after that: rebuild whatever is out of date
+build\bin\thug.exe           # play
 ```
 
 ## Running the game
@@ -35,9 +44,10 @@ tree above it, so `build/bin/thug` finds the repository's `game/`):
 An interrupted unpack is noticed and done again (`default.xbe` is written
 last). `THUG_GAME_DIR=<dir>` points the game somewhere else.
 
-The game's log goes to `~/.local/state/thug-pc-port/thug.log` (the previous
-run's is `thug.prev.log`) unless you redirect stderr yourself;
-`THUG_LOG=<file>` picks another file, `THUG_LOG=-` keeps it on stderr.
+The game's log goes to `~/.local/state/thug-pc-port/thug.log` on Linux and
+`%LOCALAPPDATA%\thug-pc-port\thug.log` on Windows (the previous run's is
+`thug.prev.log`) unless you redirect stderr yourself; `THUG_LOG=<file>` picks
+another file, `THUG_LOG=-` keeps it on stderr.
 
 In game, **F1** (or **L3 + R3**, both sticks clicked, on a pad) opens the settings
 overlay:
@@ -56,7 +66,8 @@ Changes apply at once, except a switch between 4:3 and a widescreen aspect
 (the game lays out its menus and HUD at start-up): then a **Restart to apply
 changes** button appears, which asks first, since progress since your last
 save is lost. Settings are saved to
-`~/.config/thug-pc-port/settings.ini` when the overlay closes. While it is
+`~/.config/thug-pc-port/settings.ini` (Windows:
+`%APPDATA%\thug-pc-port\settings.ini`) when the overlay closes. While it is
 open the game gets no input and the pad does not vibrate. In a window, the
 mouse cursor hides after two seconds without moving. The window reopens as
 you left it: its size, whether it was maximised or fullscreen, and its
@@ -76,7 +87,7 @@ The variables below override the saved settings for one run.
 | Escape | START (pause) while skating; B (back) in the main menu's screens and the pause menu, so it also leaves the pause menu |
 | W A S D or arrow keys | D-pad |
 | F11 or Alt+Enter | Toggle borderless fullscreen |
-| F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` and the log, for a bug report |
+| F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` (Windows: `%LOCALAPPDATA%\thug-pc-port\captures\`) and the log, for a bug report |
 | `THUG_FULLSCREEN=1` | Start fullscreen |
 | `THUG_ASPECT=<ratio>` | Aspect ratio: `16:9` (default), `16:10` or `4:3`. The game's field of view follows (Hor+); switching between 4:3 and a wide ratio changes the menu and HUD layout at the next start. `THUG_WIDESCREEN=0` still means 4:3 |
 | `THUG_RES_SCALE=<x>` | Internal resolution, as a multiple of 480 lines (default 2.25: 1920x1080 at 16:9; 0 = your desktop's height) |
@@ -93,7 +104,7 @@ The variables below override the saved settings for one run.
 | `THUG_VBLANK_TIMING=1` | The original 60 Hz game timing (runs fast above 60 fps) |
 | `RECOMP_PB_GL=0` | The old CPU renderer (slow) |
 
-A Windows build is next: the plan and its state are in
+The Windows build's state and its open items are in
 [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## You need
@@ -102,7 +113,18 @@ A Windows build is next: the plan and its state are in
   contains no game code or data, and no generated code derived from it. The
   game's files go in `game/`, which git ignores.
   - Supported `default.xbe`: SHA-1 `2951de954c96a8b962ba1cde34548fa82ae668d7`
-- Linux x86-64 with:
+- **Windows 10 or 11** (x64) with [MSYS2](https://www.msys2.org/) and its
+  CLANG64 packages. `scripts\build.bat --setup` installs both (MSYS2 through
+  winget, if it is not in `C:\msys64` or `%MSYS2_ROOT%`), or by hand in an
+  MSYS2 shell:
+
+  ```
+  pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,libepoxy,python,python-capstone,gdb}
+  ```
+
+  The build copies the DLLs it needs (SDL2 and SDL3, libepoxy, libc++,
+  winpthread) next to `thug.exe`, so the game then starts from Explorer too.
+- **Linux** x86-64 with:
   - clang or GCC
   - CMake 3.20 or newer
   - Ninja
@@ -124,6 +146,12 @@ cp "/path/to/Tony Hawk's Underground (USA).iso" game/
 scripts/build.sh
 build/bin/thug
 ```
+
+On Windows, `scripts\build.bat` does the same from any shell: it runs
+`scripts/build.sh` in MSYS2's CLANG64 environment, so no MSYS2 shell needs
+opening. It takes the same `--regen` and `--release`, and `--setup` installs
+or updates the toolchain first. The result is `build\bin\thug.exe`, which
+runs from anywhere.
 
 Building needs the unpacked `default.xbe` (it is lifted to C), so
 `scripts/build.sh` unpacks the image itself the first time, with

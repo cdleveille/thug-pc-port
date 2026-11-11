@@ -23,6 +23,19 @@ if(WIN32)
     # MSVC keeps the plain name. tests/input_xinput_imports checks the result.
     target_link_libraries(xbox_input PUBLIC platform
         $<IF:$<BOOL:${MINGW}>,xinput1_4,xinput>)
+    # A host that runs its own SDL window (rather than the GDI or D3D11 one)
+    # feeds the keys from SDL's events: keyboard_sdl.c, as on POSIX. The pads
+    # stay on XInput. Built when SDL2 is found, so a host without it is as
+    # before.
+    find_package(SDL2 QUIET)
+    option(XBOXRECOMP_INPUT_SDL_KEYBOARD
+           "Windows: also build the SDL window's key events (keyboard_sdl.c)"
+           ${SDL2_FOUND})
+    if(XBOXRECOMP_INPUT_SDL_KEYBOARD)
+        find_package(SDL2 REQUIRED)
+        target_sources(xbox_input PRIVATE keyboard_sdl.c)
+        target_link_libraries(xbox_input PUBLIC SDL2::SDL2)
+    endif()
 else()
     find_package(SDL2 REQUIRED)
     # The SDL window's key and focus events into that table.

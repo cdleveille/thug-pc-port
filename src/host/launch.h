@@ -3,12 +3,13 @@
  * executable is all a player has to do.
  *
  *   1. The log: when nobody redirected stderr (a terminal, a desktop
- *      launcher), it goes to a file instead -- thug.log in the state directory
- *      ($XDG_STATE_HOME/thug-pc-port, ~/.local/state/thug-pc-port), the
- *      previous run's kept as thug.prev.log -- and the terminal, if any, gets
- *      only what a player needs to read. THUG_LOG=<file> picks the file,
- *      THUG_LOG=- keeps stderr as it is. A redirected stderr (a file or a
- *      pipe, as scripts and the debugging recipes use) is left alone.
+ *      launcher, Explorer), it goes to a file instead -- thug.log in the state
+ *      directory ($XDG_STATE_HOME/thug-pc-port, ~/.local/state/thug-pc-port;
+ *      %LOCALAPPDATA%\thug-pc-port on Windows), the previous run's kept as
+ *      thug.prev.log -- and the terminal, if any, gets only what a player
+ *      needs to read. THUG_LOG=<file> picks the file, THUG_LOG=- keeps stderr
+ *      as it is. A redirected stderr (a file or a pipe, as scripts and the
+ *      debugging recipes use) is left alone.
  *   2. The game's files (src/host/game_data.h): found next to the
  *      executable; unpacked from the disc image on first launch, with a
  *      progress window; refused with a message box when absent or not the
@@ -24,6 +25,11 @@ extern "C" {
 #endif
 
 void thug_launch_log_setup(void);
+
+/* The folder for the log and glitch captures, created if need be: as above,
+ * with forward slashes on POSIX and backslashes on Windows. 1 with it in out,
+ * 0 when there is none (no HOME, no LOCALAPPDATA, or it cannot be made). */
+int thug_launch_state_dir(char *out, size_t n);
 
 /* Put stdout and stderr back as the game was started with (the log, if
  * thug_launch_log_setup moved them to it, stays where it is on disk): for a

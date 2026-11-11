@@ -12,6 +12,9 @@
  *
  * Lifted code cannot be stopped mid-flight, so nothing is torn down first,
  * as when the window is closed.
+ *
+ * Windows has no exec: a new process is started with the same executable,
+ * command line and starting environment (CreateProcessW), then this one ends.
  */
 #ifndef THUG_RESTART_H
 #define THUG_RESTART_H
@@ -23,7 +26,7 @@ extern "C" {
 /* First thing in main(): remember the arguments and the environment. */
 void thug_restart_init(int argc, char **argv);
 
-/* Whether this build can restart itself (POSIX; not yet Windows). */
+/* Whether this build can restart itself (it remembered what it needs). */
 int  thug_restart_supported(void);
 
 /* Restart now. Returns only if the exec failed (logged). Main thread, after

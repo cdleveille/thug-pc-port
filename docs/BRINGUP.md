@@ -22,7 +22,8 @@ the next step. Record failures here as well as successes.
 - [x] Input: a real XInput pad works through SDL2 (owner-verified: A or
   Start skips the intro)
 - [x] Movies (Bink): Activision, Neversoft and intro movies render
-- [ ] Windows build
+- [x] Windows build (MSYS2 CLANG64; scripted runs into free skate; the
+  owner's playtest is still to come)
 - [x] Widescreen (native 16:9, Hor+) and native resolution
 - [x] Unlocked frame rate with real-time game logic
 - [ ] Shadows (depth textures)
@@ -30,6 +31,87 @@ the next step. Record failures here as well as successes.
   the CPU)
 
 ## Log
+
+### 2026-11-11: the Windows build
+
+- **Set up** on the owner's Windows 11 machine (RTX 4080, a scaled 4K
+  desktop): MSYS2 from winget, then the CLANG64 packages (`docs/WINDOWS.md`; the
+  capstone package exists, `mingw-w64-clang-x86_64-python-capstone`).
+  `thug-extract` unpacked the image in 7 s and verified `default.xbe`;
+  `scripts/regen.sh` lifted it in 3 m 42 s, 10,026 functions, 0 failed, 41
+  files, as on Linux. The toolkit's runtime libraries compiled under MinGW
+  clang as they were.
+- **Ported** the Linux path, file by file from the handoff's table (the
+  "What was done" table in `docs/WINDOWS.md` has each): SDL2, epoxy and ImGui
+  on Windows; the renderer's stub removed; the window loop, the Linux boot
+  path in `main.c`; the log, captures and progress window; restart through
+  `CreateProcessW`; the keyboard from SDL events with pads on XInput
+  (toolkit); a precise frame-cap sleep; DPI awareness; `-mwindows`; the
+  toolchain DLLs copied next to `thug.exe`. Defaults: `RECOMP_WIN_PLACEHOLDER`
+  (the 4 GB guest window held before the GL driver loads). The first full
+  build linked at once (26 s at 20 threads).
+- **Found on the way:** `nv2a_pb_exec.c` declared its DXT cache thread-local
+  with `__declspec(thread)` on `_WIN32`, which MinGW ignores (one warning
+  among many), so the CPU rasteriser's workers would have shared it; and
+  running the toolkit's suites showed 41 of them failing to link
+  (`clock_gettime64`) and one Windows-only diagnostic slip in the raster pool.
+  All three fixed in the toolkit (NOTES "Toolkit changes").
+- **Checked** (scratch `APPDATA`/`LOCALAPPDATA`, muted visible runs):
+  - Headless with Start pulsed: intro movies, main menu, story options, the
+    pre-made skater select room, all drawn as on Linux (frame dumps).
+  - Visible: a 2560x1440 window on the 4K desktop (real pixels), 1080p
+    internal at 60.0 fps with the cap, the icon in the title bar, the story
+    intro cutscene (the Muska flyer textured); the owner's XInput pad found on
+    port 1; Escape's layers switching; smooth text and icons magnifying on its
+    thread; the F1 overlay (window capture); WM_CLOSE logging "window closed"
+    and writing `%APPDATA%\thug-pc-port\settings.ini` with the window's size
+    and position.
+  - First launch from a folder holding only the image (a hard link,
+    `THUG_GAME_DIR`): the progress window, the unpack, the check, then the
+    intro. The progress window was 520x90 real pixels, tiny on the 4K
+    desktop with its title cut off; it now scales by the desktop's DPI
+    (checked: the whole title and percentage show).
+  - Restart: a scratch probe of `restart.c` restarted with the same arguments
+    (one with a space) and the starting environment, not a variable added
+    after start-up.
+  - Free skate: `RECOMP_PAD_LIVE` through the menus into New Jersey, then
+    skating (a skitch for 750 points). Headless at 1080p, uncapped: 63-66 fps
+    at about 1,000 draws, 40 at 2,100 (Linux: 83-84 at 1,000). The
+    executor's walk is 184 ns per index (Linux 155-170); GL submission is
+    faster than on Linux. Recorded in `docs/WINDOWS.md`, not investigated.
+  - The toolkit's suites, each in a fresh folder: 70 pass (all 11
+    Windows-only ones, and `kernel_open_directory`, which fails on Linux), 14
+    POSIX-only, `d3d8_smoke` does not build (D3D11 layer, not THUG's path).
+    New: `tests/input_xinput_empty_ports`; `tests/input_keyboard_sdl` now runs
+    on Windows. The port's own test passes.
+- **Not checked:** anything by hand (pad feel, rumble, hotplug, keys,
+  fullscreen, F10), sound by ear (XAudio2 starts; every run was muted), a
+  crash's message box, gdb on Windows. The owner checklist is in
+  `docs/WINDOWS.md`.
+- **`scripts\build.bat`** (owner request: build without switching shells):
+  runs `build.sh` in CLANG64 from cmd or PowerShell; `--setup` installs
+  MSYS2 and the packages. Checked from PowerShell and cmd: help, an
+  up-to-date build, a rebuild after a change, `--release` passed on, the
+  error for a missing MSYS2, `--setup` on the installed toolchain. Two bugs
+  found by those runs: `shift` moves `%0`, so with any argument the script
+  looked for `build.sh` in the current folder (the folder is now taken
+  first); and see the next point.
+- **MSYS2 replaced SDL2 with sdl2-compat.** `--setup`'s `pacman -Syu`
+  removed SDL2 2.32.10 for sdl2-compat 2.32.74 over SDL3 (marked as
+  replacing it), and the package list's `SDL2` swapped it back. The list now
+  names `sdl2-compat`, and the game was checked on it, which showed:
+  - The window was DPI-unaware (the window's awareness 0, 1707x960 logical,
+    stretched by Windows): sdl2-compat does not pass SDL2's DPI hint on.
+    Fixed by declaring per-monitor awareness through the Windows API before
+    SDL starts; now awareness 2 at 168 dpi (the desktop is at 175%), a
+    2560x1440 window, the frame filling it (a capture of the screen, not
+    only `PrintWindow`, which shows a virtualised window unscaled).
+  - The DLL copy kept the old `SDL2.dll` (the resolver looks beside the
+    executable first) and never copied `SDL3.dll`, which sdl2-compat loads
+    with `LoadLibrary`. Fixed in `scripts/copy_runtime_dlls.cmake`.
+  - Unchanged: the overlay, the progress window, the pad, keyboard layers,
+    60 fps; `input_keyboard_sdl`, `input_xinput_empty_ports`,
+    `input_xinput_imports` and the port's test pass.
 
 ### 2026-11-11: handoff to Windows
 

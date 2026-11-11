@@ -38,7 +38,7 @@
  * carries on as before). Safe to call on a host without a display. */
 int nv2a_pb_gl_init(void);
 
-/* [thug] Direct presentation (POSIX). The back end draws every surface at an
+/* [thug] Direct presentation (Linux and Windows). The back end draws every surface at an
  * internal resolution and blits the flipped one straight to its own window;
  * nothing goes back to guest memory unless asked.
  *

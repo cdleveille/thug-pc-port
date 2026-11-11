@@ -5,5 +5,8 @@ add_executable(nv2a-pb-walk-test nv2a_pb_walk_test.c ../../src/kernel/nv2a_pb_sc
 target_include_directories(nv2a-pb-walk-test PRIVATE ../../src/kernel)
 if(MSVC)
     target_compile_definitions(nv2a-pb-walk-test PRIVATE _CRT_SECURE_NO_WARNINGS)
+elseif(MINGW)
+    # The walk's profiling calls clock_gettime: winpthreads' under MinGW.
+    target_link_libraries(nv2a-pb-walk-test PRIVATE pthread)
 endif()
 add_test(NAME nv2a-pushbuffer-walk COMMAND nv2a-pb-walk-test)

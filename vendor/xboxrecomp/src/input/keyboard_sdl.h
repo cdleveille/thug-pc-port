@@ -1,6 +1,8 @@
 /**
- * xbox_input keyboard, SDL side (POSIX): the SDL window's key, mouse-button
- * and focus events into the key table of keyboard.h. See keyboard_sdl.c.
+ * xbox_input keyboard, SDL side: the SDL window's key, mouse-button and focus
+ * events into the key table of keyboard.h. See keyboard_sdl.c. POSIX, and
+ * Windows hosts that run an SDL window (XBOXRECOMP_INPUT_SDL_KEYBOARD); there
+ * the pads stay on XInput and xbox_InputSdlRefreshControllers does nothing.
  */
 #ifndef XBOX_INPUT_KEYBOARD_SDL_H
 #define XBOX_INPUT_KEYBOARD_SDL_H

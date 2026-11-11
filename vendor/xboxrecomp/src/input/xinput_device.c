@@ -73,19 +73,60 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
 /* ======================================================================== */
 
 #include <xinput.h>
+#if defined(_MSC_VER)
 #pragma comment(lib, "xinput.lib")
+#endif
 
 static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS] = { FALSE };
 static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
 
 /* The keyboard on port 0 (RECOMP_KEYBOARD=1) comes from keyboard.c, shared
- * with the SDL backend; the GDI window in fb_present.c records the keys. */
+ * with the SDL backend. The GDI window in fb_present.c records the keys, or,
+ * in a host that runs an SDL window, keyboard_sdl.c from its events. */
+
+/* XInput needs no pump and no hotplug handling: every call reads the pad, on
+ * any thread. These exist so an SDL host loop (keyboard_sdl.c) is the same on
+ * every platform. */
+void xbox_InputSetMainPump(int on) { (void)on; }
+void xbox_InputSdlRefreshControllers(void) { }
+
+/* An empty slot is expensive to ask about: XInputGetState on a port with no
+ * pad re-enumerates the devices, about a millisecond each time, and a title's
+ * USB poll asks for all four ports every frame or more often. A port seen
+ * empty is asked again only after XINPUT_EMPTY_RETRY_MS; a pad plugged in is
+ * found within that. Port times are GetTickCount64, read on the calling
+ * thread; a racing reader at worst asks once more. */
+#define XINPUT_EMPTY_RETRY_MS 1000u
+static volatile ULONGLONG g_empty_since[XBOX_MAX_CONTROLLERS];
+
+static DWORD xinput_get_state_cached(DWORD port, XINPUT_STATE *st)
+{
+    ULONGLONG now = GetTickCount64();
+    ULONGLONG since = g_empty_since[port];
+    DWORD result;
+
+    if (since && now - since < XINPUT_EMPTY_RETRY_MS)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    result = XInputGetState(port, st);
+    if (result == ERROR_SUCCESS) {
+        if (since || !g_controller_connected[port])
+            fprintf(stderr, "  [INPUT] port %lu: XInput controller connected\n",
+                    (unsigned long)port + 1);
+        g_empty_since[port] = 0;
+    } else {
+        if (g_controller_connected[port])
+            fprintf(stderr, "  [INPUT] port %lu: controller disconnected\n",
+                    (unsigned long)port + 1);
+        g_empty_since[port] = now ? now : 1;
+    }
+    return result;
+}
 
 void xbox_InputInit(void)
 {
     for (DWORD i = 0; i < XBOX_MAX_CONTROLLERS; i++) {
         XINPUT_STATE state;
-        DWORD result = XInputGetState(i, &state);
+        DWORD result = xinput_get_state_cached(i, &state);
         g_controller_connected[i] = (result == ERROR_SUCCESS);
     }
 }
@@ -98,7 +139,7 @@ static DWORD input_get_state_host(DWORD dwPort, XBOX_INPUT_STATE *pState)
     if (dwPort >= XBOX_MAX_CONTROLLERS || !pState)
         return ERROR_DEVICE_NOT_CONNECTED;
 
-    result = XInputGetState(dwPort, &xi_state);
+    result = xinput_get_state_cached(dwPort, &xi_state);
     if (result != ERROR_SUCCESS) {
         g_controller_connected[dwPort] = FALSE;
         if (dwPort == 0) {

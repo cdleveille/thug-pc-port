@@ -12,7 +12,7 @@ foreach(target nv2a-ffp-backend-test nv2a-present-sync-test)
     target_include_directories(${target} PRIVATE ../../src/kernel ../../src)
     if(MSVC)
         target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
-    elseif(NOT WIN32)
+    else()  # MinGW as well: clock_gettime is winpthreads'
         target_link_libraries(${target} PRIVATE m pthread)
     endif()
 endforeach()

@@ -95,6 +95,47 @@ Facts about the binary and the decisions made around it. Keep this current.
   an overlay setting, on by default (owner's request); `THUG_UI_UPSCALE=0`
   turns it off. HD replacement textures, the only route to real detail,
   remain an option for later.
+- **2026-11-11: The Windows build is the Linux build** (the plan in
+  `docs/WINDOWS.md`): the same SDL2 + OpenGL 3.3 renderer, window loop,
+  overlay and input, compiled with MSYS2 CLANG64 (clang, winpthreads), not
+  MSVC and not the toolkit's D3D11 path, which THUG never goes through.
+  Windows-specific choices:
+  - `thug.exe` is a windowed (GUI-subsystem) program, so no console window
+    opens beside it; `-DTHUG_WINDOWS_CONSOLE=ON` builds a console one. The log
+    is `%LOCALAPPDATA%\thug-pc-port\thug.log`, settings
+    `%APPDATA%\thug-pc-port\settings.ini`, captures under
+    `%LOCALAPPDATA%\thug-pc-port\captures`. A terminal it is started from
+    still gets the player's messages (`AttachConsole`), and a redirected
+    stderr is left alone, as on Linux.
+  - `RECOMP_WIN_PLACEHOLDER=1` is a default: the whole 4 GB guest window is
+    reserved in one placeholder before anything is mapped, because the GL
+    driver loads before the guest maps its memory (the POSIX side reserves
+    the whole window for the same reason).
+  - The build copies the toolchain DLLs (SDL2 and SDL3, libepoxy, libc++,
+    winpthread) next to `thug.exe` (`scripts/copy_runtime_dlls.cmake`).
+    Static linking was not used: the toolkit's input library links the SDL2
+    DLL, and a static SDL in the game beside it would make two SDLs.
+  - SDL2 is MSYS2's `sdl2-compat` over SDL3: MSYS2 marks it as replacing the
+    SDL2 package, so `pacman -Syu` installs it whatever one asks for. The
+    game was first brought up on real SDL2 2.32.10; on sdl2-compat two
+    things differed, both fixed: SDL2's DPI hint is not passed on (the
+    process now declares itself per-monitor aware through the Windows API),
+    and SDL3.dll is loaded at run time rather than imported (the DLL copy
+    knows that pair).
+  - `scripts\build.bat` builds from any Windows shell by running
+    `scripts/build.sh` in CLANG64; `--setup` installs the toolchain. The
+    owner does not want to switch shells to build.
+  - The frame cap sleeps on a high-resolution waitable timer
+    (`src/host/host_sleep.c`): winpthreads' `clock_nanosleep` rounds to the
+    system tick.
+  - The window is per-monitor DPI aware (`SetProcessDpiAwarenessContext`,
+    and SDL2's `SDL_WINDOWS_DPI_AWARENESS`), so a scaled 4K desktop gets
+    real pixels, not a stretched window.
+  - Closing the window and restarting end the process with
+    `TerminateProcess`, not `ExitProcess`, which would run the GL driver's
+    DLL detach after killing threads that may hold its locks. Restarting is
+    `CreateProcessW` with the starting command line and environment (no
+    exec on Windows; the PID changes).
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.
@@ -143,6 +184,11 @@ carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`,
 | 0001 | `apu.h`, `apu_core.c`: `xbox_ApuSetVolume(gain)`, a host master volume on every period sent to the audio device (after the `RECOMP_APU_WAV` dump, which keeps the title's own level), ramped across one period so a change never clicks; `apu_apply_gain` does the scaling. New test: `tests/apu_volume`. | The overlay's volume and "mute in background" |
 | 0001 | `nv2a_pb_exec.c`: `RECOMP_TRACE_TEX0=<hex>[,n]` prints how the first n batches sampling that texture in stage 0 were transformed and lit (program or fixed function, colour material, lights, attributes). | Diagnostic |
 | vendor | `xinput_device.c`: vibration holds as the Xbox pad's does, until the title sends other speeds. Each port keeps the title's last request; SDL gets it with its longest duration (0xFFFF ms) and the input poll re-arms it every 30 s while it should run. The player's strength and the overlay's focus re-send it when they change, so an overlay closed mid-rumble resumes it (XInput on Windows holds the motors itself; it gets the same re-send). Test: `tests/input_sdl_hotplug` (held, re-armed, a stop stays stopped, resumed after the focus returns; fails with a one-second hold or without the re-arm). | A grind's rumble stopped after a second (owner report). THUG sends a rumble report only when a speed changes (`RECOMP_USB_TRACE=1`: one report as an effect starts, one with 0 as it ends), and every SDL request was given 1000 ms |
+| vendor | `keyboard_sdl.c/.h`, `xinput_device.c`, `xinput_xbox.h`, `src/input/CMakeLists.txt`: on Windows, a host that runs its own SDL window feeds the keys from SDL events, as on POSIX: `keyboard_sdl.c` is built when SDL2 is found (`XBOXRECOMP_INPUT_SDL_KEYBOARD`), and the XInput backend gains `xbox_InputSetMainPump` and `xbox_InputSdlRefreshControllers` as no-ops (XInput needs no pump and no hotplug handling). Pads stay on XInput. Test: `tests/input_keyboard_sdl` now also runs on Windows; `tests/input_xinput_empty_ports` (below). | The Windows build: `host_window.c` runs one SDL main loop on both systems |
+| vendor | `xinput_device.c`: a port found empty is asked about again only after a second (`XINPUT_EMPTY_RETRY_MS`). A connected pad is still read on every call, and one pulled out reads as disconnected at once; connects and disconnects are logged (`[INPUT] port N: ...`). The `#pragma comment(lib)` is MSVC-only. New test: `tests/input_xinput_empty_ports` (a fake XInput counts the calls; fails with the old rule). | `XInputGetState` on an empty slot re-enumerates the devices (about a millisecond a call), and the title's USB poll asks for all four ports every frame or more |
+| vendor | `nv2a_pb_exec.c`: `NV_TLS` (the DXT block cache) is `__declspec(thread)` only under MSVC, `__thread` otherwise, as every other thread-local macro in the toolkit already was. Under MinGW clang the declspec was ignored with a warning, so the CPU rasteriser's workers shared one cache. Checked by the build: the `unknown attribute 'thread'` warning is gone. | The first MinGW build of THUG |
+| vendor | `src/platform/CMakeLists.txt`: under MinGW the `platform` interface links `Threads::Threads` (winpthreads), and the `nv2a_ffp_backend`, `nv2a_pb_constants`, `nv2a_pb_walk`, `nv2a_raster_batch` and `nv2a_tex_filter` tests link `pthread` there too. `nv2a_pb_scan.c` and `nv2a_pb_exec.c` call `clock_gettime` (profiling) on every host. Checked by those suites and 36 others, which all failed to link (`undefined symbol: clock_gettime64`) and now pass. | Running the toolkit's suites under MSYS2 CLANG64 |
+| vendor | `nv2a_pb_exec.c`: the Windows raster pool's small-batch path sets `s_raster_last_workers = 1`, as the pthreads branch does; it kept the previous batch's count. Diagnostic only (the caller drew the batch either way). Test: `tests/nv2a_raster_batch`, which failed on Windows ("a batch of 2944 pixels woke 4 workers") and passes. | Same |
 | vendor | `nv2a_pb_exec.c` (`batch_is_ffp`): in fixed-function mode an inline batch (`INLINE_ARRAY`, `SET_VERTEX4F`) is transformed like an array batch. Before, every inline batch went to the screen-space path, which reads positions as pixels. XDK D3D draws pre-transformed (XYZRHW) vertices through its passthrough program, so fixed mode always means object space. Test: `tests/nv2a_ffp_backend` (an inline triangle in world units, coloured and textured). | THUG's breaking glass (`DrawVerticesUP`, fixed function) stuck to the screen as white triangles that drifted up as the shards fell: world positions drawn as pixels, texture q 0. In menus and free skate every other inline batch (about 380,000, and the one immediate batch a frame) runs a vertex program, so nothing else changes |
 
 Not fixed, noted: `win32_compat.c` `VirtualAlloc` maps a `PAGE_NOACCESS`
@@ -216,8 +262,9 @@ hide stray accesses.
   would be nice to have.
 - The toolkit already fits this. On Linux it reads pads through SDL2's
   GameController API (`src/input/xinput_device.c`), which handles Steam
-  Input's virtual controller. On Windows it reads them through XInput.
-  `RECOMP_KEYBOARD` gives keyboard-as-pad for menus.
+  Input's virtual controller. On Windows it reads them through XInput (Steam
+  Input presents XInput), and the keyboard comes from the SDL window's
+  events, as on Linux. `RECOMP_KEYBOARD` gives keyboard-as-pad for menus.
 
 ## Open questions
 

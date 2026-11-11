@@ -41,6 +41,13 @@ if(WIN32)
     target_link_libraries(platform INTERFACE host_time)
     target_include_directories(platform INTERFACE ${XBOXRECOMP_SRC_DIR})
     target_link_libraries(platform INTERFACE recomp_exit_hook)
+    if(MINGW)
+        # clock_gettime (the pushbuffer walk's and executor's profiling, on
+        # every host) is winpthreads' under MinGW; without it every program
+        # linking the kernel failed with an undefined clock_gettime64.
+        find_package(Threads REQUIRED)
+        target_link_libraries(platform INTERFACE Threads::Threads)
+    endif()
 else()
     add_library(platform STATIC win32_compat.c)
     target_include_directories(platform PUBLIC
