@@ -14,8 +14,9 @@
  * pumps events, tells the renderer when the drawable changes size, and keeps
  * the title bar current.
  *
- * Keys: F11 or Alt+Enter toggles borderless fullscreen. Closing the window
- * ends the process.
+ * Keys: F11 or Alt+Enter toggles borderless fullscreen; F10 captures the
+ * next two frames for a glitch report (nv2a_pb_gl_request_capture). Closing
+ * the window ends the process.
  */
 #if !defined(_WIN32)
 
@@ -94,6 +95,9 @@ static int start_guest(void)
 #define CURSOR_IDLE_MS 2000
 static uint64_t s_mouse_moved_ms;
 
+/* Until when the title says a capture was taken (F10). */
+static uint64_t s_capture_note_until;
+
 static void update_cursor(SDL_Window *win)
 {
     int want = thug_overlay_is_open()
@@ -129,10 +133,11 @@ static void update_title(SDL_Window *win, uint64_t *t_last, uint64_t *flips_last
     nv2a_pb_gl_stats(&flips, &w, &h);
     if (w && h)
         snprintf(res, sizeof res, "%ux%u | ", (unsigned)w, (unsigned)h);
-    snprintf(title, sizeof title, "Tony Hawk's Underground | %sFPS: %.1f", res,
+    snprintf(title, sizeof title, "Tony Hawk's Underground | %sFPS: %.1f%s", res,
              *t_last ? (double)(flips - *flips_last) * 1000.0
                        / (double)(now - *t_last)
-                     : 0.0);
+                     : 0.0,
+             now < s_capture_note_until ? " | glitch captured (F10)" : "");
     SDL_SetWindowTitle(win, title);
     *t_last = now;
     *flips_last = flips;
@@ -205,6 +210,11 @@ int thug_host_window_main(int (*guest_main)(void))
                             || (ev.key.keysym.sym == SDLK_RETURN
                                 && (ev.key.keysym.mod & KMOD_ALT)))
                         toggle_fullscreen(win);
+                    if (ev.key.keysym.sym == SDLK_F10) {
+                        nv2a_pb_gl_request_capture();
+                        s_capture_note_until = now_ms() + 4000;
+                        update_title(win, &t_title, &flips_title);
+                    }
                     break;
                 default:
                     if (ev.type == s_done_event)

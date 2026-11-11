@@ -31,6 +31,66 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-11: still water, texture matrices and texgen; glitch capture
+
+- **Owner reports:** in Manhattan (story), bailing into the river makes parts
+  of the screen repeat in strips for about a second (a sign copied along a
+  row, an object smeared); the same in New Jersey's rainy night mission. And
+  the river is static: it never moves.
+- **First guess, wrong:** the bump-env texture modes (6, 7) added their
+  offset after normalising a linear texture's coordinate, which would make
+  an offset of a few texels several whole textures. Fixed anyway (the offset
+  is now added first, as in xemu's psh.c), and the first distinct bump-env
+  set-ups of a run are logged (`[PBGL] bump-env:`), but the owner's next
+  session logged none: THUG's water does not use them.
+- **The gap:** the executor's fixed-function path ignored texture-coordinate
+  generation and texture matrices entirely; every coordinate came straight
+  from the vertex streams. THUG uses both (a register census): texture
+  matrices on stages 0-2 from the menus on, REFLECTION_MAP texgen on S, T
+  and R in levels. In Manhattan two textures (`0x83484000`, `0x83487000`)
+  have a matrix whose translation moves every frame, a scrolling texture;
+  three reflection maps fold the reflection vector onto 2D with a 0.5
+  scale/offset matrix. Implemented after xemu's `vsh-ff.c` (toolkit, see
+  NOTES); `RECOMP_FFP_RAW_TEXCOORDS=1` is the A/B switch.
+- **Checked:** the toolkit test computes a scale-and-translate matrix, an
+  object-linear plane and a reflection vector by hand; menus and levels
+  render as before apart from those surfaces. **Not seen yet:** the river
+  moving, and whether this was also the splash glitch. The scripted route
+  into Manhattan does not reliably reach the water.
+- **The splash itself, from the owner's F10 capture:** not a water effect but
+  the game's reset transition (also out of bounds). The scene goes into a
+  640x480 X8R8G8B8 surface and is laid over the un-cleared screen buffer at
+  alpha 0.15 x the surface's alpha: an accumulation trail, each frame keeping
+  85% of the last, so a moving camera leaves fading copies. One real fault:
+  the renderer sampled the X8 surface's stored alpha instead of 1 (now a GL
+  alpha swizzle for alpha-less formats). A self-triggering capture of a
+  scripted out-of-bounds reset showed that alpha is 1 almost everywhere
+  (mean 0.995) and about 0.6 only under the HUD, so the fix affects the HUD
+  and the trail of the scenery is the game's own blend. Whether the original
+  looks the same is not confirmed; the owner does not remember.
+- **Owner's call: skip it.** The composite is recognised (one full-surface
+  quad sampling another render target in an alpha-less format, alpha below
+  1, alpha blending, depth ALWAYS without writes) and drawn unblended. In a
+  scripted out-of-bounds run it matched once, at the reset, and the screen
+  buffer then equals the scene surface (0.3% of pixels differ, from the 2x
+  downscale of the comparison). `THUG_GL_KEEP_TRAILS=1` keeps the trail.
+- **Still there, says the owner, with two more F10 captures.** The second
+  (out of bounds by the freeway) shows the copies inside the scene surface
+  `0x80ABC000` itself: a stack of skateboards, doubled limbs, star copies,
+  torn letters. Stale depth. Captures now log clears and each draw's zeta:
+  the game clears zeta `0x80864000` with the screen buffer bound, then draws
+  the scene into `0x80ABC000` with that zeta. On the NV2A one clear covers
+  both; here each target has its own depth buffer, and the scene surface's
+  was never cleared. A zeta clear now reaches every target that last drew
+  with that zeta (`THUG_GL_ZETA_LOG=1` reports it). In the scripted run it
+  fired on every frame from the first transition on. Owner to confirm in
+  game.
+- **Glitch capture:** F10 in game (or `THUG_GL_CAPTURE_AT=<flip>`) records
+  the next two frames: every draw as a `[CAPTURE]` line plus the probe's full
+  record in the log, and every render target as PPM under
+  `~/.local/state/thug-pc-port/captures/<time>/`. For effects on screen for
+  a second, which no scripted run can find.
+
 ### 2026-11-11: one repository, one executable
 
 - **Owner request:** commit the third-party code instead of using

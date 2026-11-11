@@ -89,6 +89,10 @@ void  nv2a_pb_gl_set_msaa(int samples);    /* 1 (off), 2, 4 or 8 */
 int   nv2a_pb_gl_msaa(void);
 int   nv2a_pb_gl_msaa_max(void);           /* what the driver allows, up to 8 */
 
+/* [thug] Glitch capture (F10): the next two frames' draws to the log and
+ * their render targets as PPM under <state dir>/captures/<time>/. */
+void  nv2a_pb_gl_request_capture(void);
+
 /* Called on the executor's thread after each frame is blitted to the window
  * and before the swap, with the default framebuffer bound and its size. */
 void  nv2a_pb_gl_set_overlay(void (*fn)(int dw, int dh));

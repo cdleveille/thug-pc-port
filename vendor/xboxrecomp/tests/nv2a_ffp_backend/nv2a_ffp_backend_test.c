@@ -6,6 +6,7 @@
  *   - a composite matrix and viewport offset put a triangle where the
  *     transform says, scaled by the surface's anti-aliasing factor;
  *   - fixed-function lighting replaces the vertex colour with the light sum;
+ *   - texture coordinates go through texture matrices and texgen;
  *   - the render state carries the stencil registers, with the hardware's
  *     reset values until the title writes them;
  *   - the semaphore release lands where the title said, method 0x0310 on
@@ -261,6 +262,52 @@ int main(void)
     }
     m(0x0298, 0);
     m(0x0314, 0);
+
+    /* Texture coordinates. Stage 0's stream (attribute 9, float2) arrives as
+     * it is; then SET_TEXTURE_MATRIX_ENABLE (0x0420) applies the stage's matrix
+     * (0x06C0, rows of four), where a 2D coordinate reads (s, t, 0, 1), so the
+     * fourth column translates it; then SET_TEXGEN_* (0x03C0) replaces
+     * components. Tony Hawk's Underground scrolls its water through the matrix
+     * and lays reflections with REFLECTION_MAP; without either, both used the
+     * raw stream. */
+    for (i = 0; i < 3; i++) {
+        putf(0x6000 + 8 * i, 0.25f);
+        putf(0x6004 + 8 * i, 0.5f);
+    }
+    m(0x1744, 0x6000); m(0x1784, 2 | (2 << 4) | (8 << 8));      /* attr 9: float2 */
+    m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
+    CHECK(near_(s_be.v[0].st[0][0], 0.25f) && near_(s_be.v[0].st[0][1], 0.5f));
+    {
+        const float T[16] = { 2, 0, 0, 0.1f,
+                              0, 2, 0, 0.2f,
+                              0, 0, 1, 0,
+                              0, 0, 0, 1 };
+        for (i = 0; i < 16; i++)
+            mf(0x06C0 + 4 * i, T[i]);
+    }
+    m(0x0420, 1);                                     /* stage 0 matrix on */
+    m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
+    CHECK(near_(s_be.v[0].st[0][0], 0.6f) && near_(s_be.v[0].st[0][1], 1.2f));
+    CHECK(near_(s_be.v[0].st[0][3], 1.0f));
+    m(0x0420, 0);
+    /* OBJECT_LINEAR on S with the plane (1, 0, 0, 0): s is the object x. */
+    m(0x03C0, 0x2401);
+    mf(0x0840, 1.0f); mf(0x0844, 0.0f); mf(0x0848, 0.0f); mf(0x084C, 0.0f);
+    m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
+    CHECK(near_(s_be.v[0].st[0][0], -1.0f) && near_(s_be.v[1].st[0][0], 1.0f));
+    CHECK(near_(s_be.v[0].st[0][1], 0.5f));           /* T still from the stream */
+    /* REFLECTION_MAP on S, T, R: the eye-to-vertex direction reflected about
+     * the eye-space normal. The model-view moves the triangle 2 along z, so
+     * vertex 2, at (0, 1, 0), is at (0, 1, 2) in eye space: u = (0, 1, 2)/sqrt5,
+     * n = (0, 0, 1), r = u - 2 (n.u) n = (0, 0.4472, -0.8944). */
+    mf(0x0480 + 4 * 11, 2.0f);                        /* model-view z translation */
+    m(0x03C0, 0x8512); m(0x03C4, 0x8512); m(0x03C8, 0x8512);
+    m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
+    CHECK(near_(s_be.v[2].st[0][0], 0.0f) && near_(s_be.v[2].st[0][1], 0.4472f)
+          && near_(s_be.v[2].st[0][2], -0.8944f));
+    m(0x03C0, 0); m(0x03C4, 0); m(0x03C8, 0);
+    mf(0x0480 + 4 * 11, 0.0f);
+    m(0x1784, 2);                                     /* attr 9 off again */
 
     /* Anti-aliasing off: the same transform lands unscaled. */
     m(0x0208, 0x0008);

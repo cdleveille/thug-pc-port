@@ -57,6 +57,7 @@ The variables below override the saved settings for one run.
 | Key or switch | Effect |
 |---|---|
 | F11 or Alt+Enter | Toggle borderless fullscreen |
+| F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` and the log, for a bug report |
 | `THUG_FULLSCREEN=1` | Start fullscreen |
 | `THUG_WIDESCREEN=0` | 4:3 instead of 16:9 |
 | `THUG_RES_SCALE=<x>` | Internal resolution, as a multiple of 480 lines (default: your desktop's height) |

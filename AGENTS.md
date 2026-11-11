@@ -141,6 +141,24 @@ that texture's decode as PPM (in the working directory), and the toolkit's
 `RECOMP_EXEC_PROFILE=1` prints where the executor's time goes per frame
 (transform, assembly, back end, decode), the measure to optimise against: the
 title waits on the executor every frame, so its time is the frame time.
+**A glitch the player saw:** F10 in game captures the next two frames: every
+draw as a `[CAPTURE]` line (target; each stage's texture, swizzled, linear or
+DXT, and whether it is a render target; the stage modes) followed by the
+probe's full record, in the log, and every render target as PPM under
+`~/.local/state/thug-pc-port/captures/<time>/`. `THUG_GL_CAPTURE_AT=<flip>`
+does the same in a scripted run, and `THUG_GL_CAPTURE_ON_X8=1` starts one at
+the first alpha-blended draw that samples an alpha-less render target (THUG's
+reset transition). Captures include each target's alpha as `*_alpha.ppm`.
+`THUG_GL_RT_RAW_ALPHA=1` samples such targets' stored alpha instead of 1 (an
+A/B switch). The reset transition's trail is skipped on the owner's request
+(`is_trail_composite`, a `[PBGL] ... trail skipped` line each time);
+`THUG_GL_KEEP_TRAILS=1` draws it as the game asks. Each render target owns
+its depth buffer; a clear of a zeta surface reaches every target that last
+drew with it (`THUG_GL_ZETA_LOG=1` reports those), but depth contents are not
+shared between targets. Captures log clears and each draw's zeta. The renderer also logs the first few bump-env stage set-ups
+unasked (`[PBGL] bump-env:`).
+The toolkit's fixed-function path generates texture coordinates and applies
+texture matrices; `RECOMP_FFP_RAW_TEXCOORDS=1` turns that off for an A/B.
 `THUG_GL_FLICKER=<dir>` finds one-frame glitches: every presented frame is
 read back (slow; diagnosis only), and a frame unlike both its neighbours is
 saved with its neighbours as PPM, with a `[FLICKER]` line comparing draws,

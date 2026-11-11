@@ -25,12 +25,15 @@
  * textures are cached by identity and content hash (see GlTex).
  *
  * Known gaps: depth textures (shadow maps) are not sampled; each target owns
- * its depth buffer, so two colour surfaces never share one.
+ * its depth buffer, so two colour surfaces drawn with one zeta surface share
+ * its clears (gl_clear) but not its contents.
  */
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>                 /* [thug] mkdir, for captures */
 #include <time.h>
 
 #include "nv2a_backend.h"
@@ -318,14 +321,20 @@ static const char *k_fs =
     "        }\n"
     "        return vec4(0.0);\n"
     "    }\n"
+    /* [thug] The bump offset is in the coordinate's own units -- texels for
+     * a linear texture -- so it is added before uTexScale normalises them,
+     * as on the NV2A (and xemu's psh.c: texScale * (pT + dsdt)). Added after,
+     * an offset of a few texels became several whole textures: THUG's water
+     * and rain screen effects (a linear copy of the frame, refracted through
+     * a ripple map) drew repeated strips of the screen. */
     "    if (mode == 6u) {\n"            /* BUMPENVMAP */
     "        float q = (c.w != 0.0) ? c.w : 1.0;\n"
-    "        return texture(tx, c.xy * uTexScale[st] / q + rc_bump_dir(st, cin));\n"
+    "        return texture(tx, (c.xy / q + rc_bump_dir(st, cin)) * uTexScale[st]);\n"
     "    }\n"
     "    if (mode == 7u) {\n"            /* BUMPENVMAP_LUMINANCE */
     "        float q = (c.w != 0.0) ? c.w : 1.0;\n"
     "        float lum = sign3(cin.r) * 0.5 + 0.5;\n"
-    "        vec4 t = texture(tx, c.xy * uTexScale[st] / q + rc_bump_dir(st, cin));\n"
+    "        vec4 t = texture(tx, (c.xy / q + rc_bump_dir(st, cin)) * uTexScale[st]);\n"
     "        return t * (uRcBumpSO[st].x * lum + uRcBumpSO[st].y);\n"
     "    }\n"
     "    if (mode >= 8u) return vec4(0.0);\n"
@@ -695,6 +704,7 @@ typedef struct {
     GLuint   msfbo, mscol, msdepth;
     uint32_t samples;             /* 1: not multisampled */
     int      ms_dirty;            /* drawn since the last resolve */
+    int      alpha_one;           /* tex's alpha swizzle is GL_ONE (see stage_bind) */
     uint64_t used;
 } GlTarget;
 
@@ -875,6 +885,7 @@ static int target_alloc(GlTarget *t, uint32_t lw, uint32_t lh)
     t->lw = lw; t->lh = lh; t->pw = pw; t->ph = ph;
     t->samples = 1;
     t->ms_dirty = 0;
+    t->alpha_one = 0;                 /* a new texture swizzles nothing */
     /* [thug] The multisampled pair, filled from the single-sample one (a blit
      * into a multisampled framebuffer replicates each pixel into every
      * sample, same size only). If the driver refuses, the target simply
@@ -1434,6 +1445,28 @@ static int tex_streamed(const Nv2aTexture *t)
 /* Bind one texture stage, uploading the texture the first time it is seen.
  * Returns 0 when there is nothing to bind (or the format cannot be decoded),
  * which the caller reports to the shader as "stage off". */
+/* [thug] Does an NV2A texture format carry alpha? The colour formats
+ * without it read alpha 1 (nv2a_pb_exec.c's decoder ORs in 0xFF000000). */
+static int fmt_without_alpha(uint32_t fmt)
+{
+    switch (fmt) {
+    case 0x03: case 0x1C:             /* X1R5G5B5, LIN_X1R5G5B5 */
+    case 0x05: case 0x11:             /* R5G6B5, LIN_R5G6B5 */
+    case 0x07: case 0x1E:             /* X8R8G8B8, LIN_X8R8G8B8 */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int tex_format_has_alpha(uint32_t fmt)
+{
+    static int raw = -1;              /* THUG_GL_RT_RAW_ALPHA=1: the A/B switch */
+    if (raw < 0)
+        raw = getenv("THUG_GL_RT_RAW_ALPHA") != NULL;
+    return raw || !fmt_without_alpha(fmt);
+}
+
 static int stage_bind(uint32_t unit, const Nv2aTexture *t, uint32_t frame)
 {
     GlTex *e;
@@ -1467,6 +1500,38 @@ static int stage_bind(uint32_t unit, const Nv2aTexture *t, uint32_t frame)
                 s_stage_sc[unit][1] = th / (float)rt->lh;
             }
             bind_unit(unit, rt->tex, sampler_for(t, 0));
+            /* [thug] A format without alpha (X8R8G8B8, R5G6B5, X1R5G5B5)
+             * reads alpha 1 on the NV2A, whatever byte the surface holds; the
+             * decoder does the same for textures from guest memory. The GL
+             * texture holds whatever alpha the target's draws left. THUG's
+             * reset transition (bailing into water, going out of bounds)
+             * renders the scene into an X8R8G8B8 target and lays it over the
+             * last frames at vertex alpha x texture alpha: with the real alpha
+             * mostly near 0, old frames stayed on screen as sharp repeated
+             * copies instead of fading into a blur. */
+            {
+                int one = !tex_format_has_alpha(t->color);
+                /* THUG_GL_CAPTURE_ON_X8=1: capture the first frames that
+                 * blend an alpha-less target over SRC_ALPHA (the reset
+                 * transition's composite; diagnosis of this path). */
+                static int on_x8 = -1;
+                if (on_x8 < 0)
+                    on_x8 = getenv("THUG_GL_CAPTURE_ON_X8") != NULL;
+                if (on_x8 == 1 && fmt_without_alpha(t->color)
+                        && s_last_rs.blend_enable && s_last_rs.blend_src == 0x0302) {
+                    on_x8 = 2;
+                    nv2a_pb_gl_request_capture();
+                }
+                if (one != rt->alpha_one) {
+                    if (s_active_unit != (int)unit) {
+                        glActiveTexture(GL_TEXTURE0 + unit);
+                        s_active_unit = (int)unit;
+                    }
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A,
+                                    one ? GL_ONE : GL_ALPHA);
+                    rt->alpha_one = one;
+                }
+            }
             if (s_bind_log)
                 fprintf(stderr, "[PBGLB] f%u u%u off %08X target alias\n",
                         frame, unit, t->offset);
@@ -1582,6 +1647,42 @@ static void set_textured(int v) { if (v != s_u_textured) { glUniform1i(u_texture
 static uint32_t s_rc_last_clip, s_rc_last_fog;
 static int s_rc_valid, s_no_comb = -1;
 
+/* [thug] Bump-env stages are rare (THUG: water and rain screen effects, a
+ * second at a time), so the first few distinct set-ups go to the log
+ * unasked: the record to check their coordinate space against. */
+static uint32_t s_frame;               /* defined with the flip code below */
+
+static void bump_log(const Nv2aBatch *b, uint32_t st, uint32_t mode)
+{
+    static uint32_t seen[12];
+    static int n;
+    const Nv2aCombiner *rc = b->combiner;
+    const Nv2aTexture *t = b->textures[st];
+    uint32_t key, k;
+    int linear;
+
+    if (n >= (int)(sizeof seen / sizeof seen[0]))
+        return;
+    key = (t ? t->offset : 0) ^ (st << 28) ^ (mode << 24);
+    for (k = 0; k < (uint32_t)n; k++)
+        if (seen[k] == key)
+            return;
+    seen[n++] = key;
+    linear = t && !d3d8_format_is_swizzled(t->color)
+             && !d3d8_format_dxt_block_bytes(t->color);
+    fprintf(stderr, "[PBGL] bump-env: flip %u stage %u mode %u tex %08X %ux%u fmt %02X %s%s"
+            " addr %u/%u matrix %g %g %g %g lum %g %g st0 %g %g q %g\n",
+            (unsigned)s_frame, st, mode, t ? t->offset : 0, t ? t->width : 0,
+            t ? t->height : 0, t ? t->color : 0, linear ? "linear" : "swizzled",
+            t && target_by_va(t->offset) ? ", a render target" : "",
+            t ? t->addr_u : 0, t ? t->addr_v : 0,
+            (double)rc->bump_mat[st][0], (double)rc->bump_mat[st][1],
+            (double)rc->bump_mat[st][2], (double)rc->bump_mat[st][3],
+            (double)rc->bump_scale[st], (double)rc->bump_offset[st],
+            (double)b->vertices[0].st[st][0], (double)b->vertices[0].st[st][1],
+            (double)b->vertices[0].st[st][3]);
+}
+
 static int rc_upload(const Nv2aBatch *b, const Nv2aVertex *v)
 {
     const Nv2aCombiner *rc = b->combiner;
@@ -1597,8 +1698,12 @@ static int rc_upload(const Nv2aBatch *b, const Nv2aVertex *v)
      * for an off stage is a different draw from "diffuse times texture". */
     if (!rc)
         goto off;
-    for (i = 0; i < 4; i++)
-        s_mode_hist[(rc->stage_program >> (i * 5)) & 0x1F]++;
+    for (i = 0; i < 4; i++) {
+        uint32_t m = (rc->stage_program >> (i * 5)) & 0x1F;
+        s_mode_hist[m]++;
+        if (m == 6 || m == 7)
+            bump_log(b, (uint32_t)i, m);
+    }
     if (s_no_comb < 0)
         s_no_comb = getenv("RECOMP_GL_NO_COMB") != NULL;
     /* [thug] The combiner uniforms are a few hundred bytes of state that
@@ -1934,6 +2039,9 @@ static void apply_state(const Nv2aRenderState *rs, const Nv2aSurface *s,
 /* ── The back end ───────────────────────────────────────────────────────── */
 
 static uint32_t s_frame;
+static int s_zeta_log;                /* THUG_GL_ZETA_LOG=1: shared-zeta clears */
+static int s_capture_left;            /* the glitch capture (below) */
+static unsigned s_capture_draw;
 
 static void gl_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
                      uint32_t flags, uint32_t argb, uint32_t zstencil)
@@ -2003,6 +2111,43 @@ static void gl_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
         s_frame_dirty = 1;
         t->ms_dirty = 1;
     }
+    /* [thug] The depth-stencil surface (zeta) is one surface on the NV2A,
+     * shared by every colour surface drawn with it; here each target has a
+     * depth buffer of its own. So a clear of the zeta clears the depth of
+     * every target that last drew with that zeta, not only the bound one.
+     * THUG's reset transition clears zeta 0x80864000 with the 2x-wide screen
+     * buffer bound, then draws the scene into a 640x480 surface with the same
+     * zeta: that surface kept the previous frame's depth, and everything that
+     * moved left copies behind (a stack of skateboards, doubled limbs). */
+    if ((bits & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) && rs->zeta_va) {
+        GLbitfield zbits = bits & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        uint32_t i, n = 0;
+        for (i = 0; i < TARGET_MAX; i++) {
+            GlTarget *u = &s_targets[i];
+            if (!u->fbo || u == t || u->zeta_va != rs->zeta_va)
+                continue;
+            if (!n) {
+                glDisable(GL_SCISSOR_TEST);    /* the whole of each: the zeta is */
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, target_draw_fbo(u));
+            glClear(zbits);
+            n++;
+        }
+        if (n) {
+            s_gl_dirty = 1;                    /* the next draw rebinds and re-applies */
+            s_state_valid = 0;
+            s_bound_fbo = 0;
+            if (s_zeta_log)
+                fprintf(stderr, "[PBGL] flip %u: zeta %08X cleared on %u more target(s)\n",
+                        (unsigned)s_frame, rs->zeta_va, n);
+        }
+    }
+    if (s_capture_left > 0)
+        fprintf(stderr, "[CAPTURE] flip %u clear target %08X %ux%u zeta %08X flags %02X"
+                " argb %08X zstencil %08X (after draw %u)\n", (unsigned)s_frame,
+                t->color_va, t->lw, t->lh, rs->zeta_va, flags, argb, zstencil,
+                s_capture_draw);
 }
 
 static uint64_t s_dropped_tris;
@@ -2361,6 +2506,59 @@ static void gl_vert_fill(GlVert *o, const Nv2aVertex *v)
             o->st[st][j] = v->st[st][j];
 }
 
+/* [thug] THUG's reset transition (bailing into water, leaving the play
+ * area) renders each frame into an alpha-less offscreen surface and lays it
+ * over the screen buffer, never cleared, at vertex alpha 0.15 with
+ * SRC_ALPHA / ONE_MINUS_SRC_ALPHA: for about a second every frame keeps 85%
+ * of the last, so anything moving leaves a trail of fading copies. That is
+ * the game's own effect, faithfully drawn, and the owner asked for it gone:
+ * this draw is recognised (one full-surface quad sampling another render
+ * target in an alpha-less format, alpha below 1, alpha blending, depth
+ * ALWAYS without writes) and drawn unblended, so each frame replaces the
+ * last and the transition looks like play. THUG_GL_KEEP_TRAILS=1 keeps the
+ * game's blend. */
+static int is_trail_composite(const Nv2aBatch *b, const GlTarget *t)
+{
+    static int keep = -1;
+    static uint32_t last_flip = ~0u;
+    const Nv2aRenderState *rs = b->state;
+    const Nv2aTexture *tx = b->textures[0];
+    const GlTarget *rt;
+    float x0, x1, y0, y1;
+    uint32_t i;
+
+    if (keep < 0)
+        keep = getenv("THUG_GL_KEEP_TRAILS") != NULL;
+    if (keep || !tx || b->count > 6 || !rs->blend_enable
+            || rs->blend_src != 0x0302 || rs->blend_dst != 0x0303
+            || rs->depth_write || (rs->depth_test_enable && rs->depth_func != 0x0207)
+            || !fmt_without_alpha(tx->color)
+            || (b->vertices[0].diffuse >> 24) == 0xFF)
+        return 0;
+    rt = target_by_va(tx->offset);
+    if (!rt || rt == t)
+        return 0;
+    x0 = x1 = b->vertices[0].x;
+    y0 = y1 = b->vertices[0].y;
+    for (i = 1; i < b->count; i++) {
+        const Nv2aVertex *v = &b->vertices[i];
+        if (v->x < x0) x0 = v->x;
+        if (v->x > x1) x1 = v->x;
+        if (v->y < y0) y0 = v->y;
+        if (v->y > y1) y1 = v->y;
+    }
+    if (x0 > 1.0f || y0 > 1.0f || x1 < (float)t->lw - 1.0f || y1 < (float)t->lh - 1.0f)
+        return 0;
+    if (s_frame - last_flip > 30)
+        fprintf(stderr, "[PBGL] flip %u: reset transition, its trail skipped"
+                " (THUG_GL_KEEP_TRAILS=1 keeps it)\n", (unsigned)s_frame);
+    last_flip = s_frame;
+    return 1;
+}
+
+/* The glitch capture, defined with the frame dumps below. */
+static void capture_draw(const Nv2aSurface *s, const Nv2aBatch *b, const GlTarget *t);
+
 static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
 {
     GlTarget *t;
@@ -2387,7 +2585,17 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
         }
     }
     target_bind(t, s);
-    apply_state(b->state, s, s_frame);
+    {
+        /* [thug] The reset transition's trail, skipped (owner's call). */
+        Nv2aRenderState solid;
+        if (is_trail_composite(b, t)) {
+            solid = *b->state;
+            solid.blend_enable = 0;
+            apply_state(&solid, s, s_frame);
+        } else {
+            apply_state(b->state, s, s_frame);
+        }
+    }
     comb_report(b, &b->vertices[0]);
     probe_drew = probe_hit(s, b) && probe_report(s, b);
     {
@@ -2413,6 +2621,8 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
             }
         }
     }
+    if (s_capture_left > 0)
+        capture_draw(s, b, t);
     if (probe_drew)
         probe_pixel("pre", s);
 
@@ -2765,12 +2975,44 @@ static void flicker_check(GlTarget *t)
     }
 }
 
-static void dump_target(GlTarget *t)
+static void dump_target_to(GlTarget *t, const char *path);
+
+/* [thug] t's alpha channel as a grey PPM (captures). */
+static void dump_target_alpha_to(GlTarget *t, const char *path)
+{
+    uint8_t *buf;
+    size_t n;
+    FILE *f;
+    uint32_t i;
+
+    if (!t || !t->pw || !t->ph)
+        return;
+    n = (size_t)t->pw * t->ph;
+    buf = (uint8_t *)malloc(n * 3);
+    if (!buf)
+        return;
+    s_gl_dirty = 1;
+    target_resolve(t);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, t->fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, (GLsizei)t->pw, (GLsizei)t->ph, GL_ALPHA, GL_UNSIGNED_BYTE, buf);
+    for (i = (uint32_t)n; i-- > 0;)
+        buf[3 * i] = buf[3 * i + 1] = buf[3 * i + 2] = buf[i];
+    f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P6\n%u %u\n255\n", t->pw, t->ph);
+        fwrite(buf, 1, n * 3, f);
+        fclose(f);
+    }
+    free(buf);
+}
+
+static void dump_target_to(GlTarget *t, const char *path)
 {
     static uint8_t *buf;
     static size_t cap;
     size_t need;
-    char path[512];
     FILE *f;
     uint32_t y;
 
@@ -2791,7 +3033,6 @@ static void dump_target(GlTarget *t)
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, (GLsizei)t->pw, (GLsizei)t->ph, GL_RGB,
                  GL_UNSIGNED_BYTE, buf);
-    snprintf(path, sizeof path, "%s/gl%06u.ppm", s_dump_dir, (unsigned)s_frame);
     f = fopen(path, "wb");
     if (!f)
         return;
@@ -2799,6 +3040,101 @@ static void dump_target(GlTarget *t)
     for (y = 0; y < t->ph; y++)
         fwrite(buf + (size_t)y * t->pw * 3, 1, (size_t)t->pw * 3, f);
     fclose(f);
+}
+
+static void dump_target(GlTarget *t)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/gl%06u.ppm", s_dump_dir, (unsigned)s_frame);
+    dump_target_to(t, path);
+}
+
+/* [thug] Glitch capture (F10; nv2a_pb_gl_request_capture): the next two
+ * frames in full, for a report of something that is on screen only briefly.
+ * Every draw goes to the log as a [CAPTURE] line (index, target, each stage's
+ * texture: linear or swizzled, and whether it is a render target) followed by
+ * the probe's full record ([GLPROBE] lines: state, vertices, coordinates,
+ * combiner); at each flip every render target is written as PPM to
+ * <state dir>/captures/<time>/ ($XDG_STATE_HOME/thug-pc-port, else
+ * ~/.local/state/thug-pc-port). */
+static volatile int s_capture_req;
+static char     s_capture_dir[1024];
+
+void nv2a_pb_gl_request_capture(void) { s_capture_req = 1; }
+
+static int capture_begin(void)
+{
+    const char *xdg = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
+    char stamp[32];
+    time_t now = time(NULL);
+    struct tm tmv;
+    size_t i;
+
+    if (xdg && *xdg)
+        snprintf(s_capture_dir, sizeof s_capture_dir, "%s/thug-pc-port/captures", xdg);
+    else if (home && *home)
+        snprintf(s_capture_dir, sizeof s_capture_dir, "%s/.local/state/thug-pc-port/captures", home);
+    else
+        snprintf(s_capture_dir, sizeof s_capture_dir, "captures");
+    localtime_r(&now, &tmv);
+    strftime(stamp, sizeof stamp, "/%Y%m%d-%H%M%S", &tmv);
+    strncat(s_capture_dir, stamp, sizeof s_capture_dir - strlen(s_capture_dir) - 1);
+    for (i = 1; s_capture_dir[i]; i++) {               /* mkdir -p */
+        if (s_capture_dir[i] == '/') {
+            s_capture_dir[i] = 0;
+            mkdir(s_capture_dir, 0755);
+            s_capture_dir[i] = '/';
+        }
+    }
+    if (mkdir(s_capture_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[CAPTURE] cannot create %s: %s\n", s_capture_dir, strerror(errno));
+        return 0;
+    }
+    fprintf(stderr, "[CAPTURE] capturing flips %u-%u into %s\n", (unsigned)s_frame,
+            (unsigned)s_frame + 1, s_capture_dir);
+    s_capture_draw = 0;
+    return 1;
+}
+
+static void capture_draw(const Nv2aSurface *s, const Nv2aBatch *b, const GlTarget *t)
+{
+    int k;
+    fprintf(stderr, "[CAPTURE] flip %u draw %u target %08X %ux%u zeta %08X", (unsigned)s_frame,
+            s_capture_draw++, t->color_va, t->lw, t->lh, b->state->zeta_va);
+    for (k = 0; k < 4; k++) {
+        const Nv2aTexture *x = b->textures[k];
+        if (x)
+            fprintf(stderr, " | t%d %08X %ux%u fmt %02X %s%s", k, x->offset, x->width,
+                    x->height, x->color,
+                    d3d8_format_is_swizzled(x->color) ? "swz"
+                    : d3d8_format_dxt_block_bytes(x->color) ? "dxt" : "lin",
+                    target_by_va(x->offset) ? " RT" : "");
+    }
+    fprintf(stderr, " | stages %05X\n", b->combiner ? b->combiner->stage_program : 0);
+    s_probe_force = 1;
+    probe_report(s, b);
+    s_probe_force = 0;
+}
+
+static void capture_flip(void)
+{
+    uint32_t i;
+    int n = 0;
+    for (i = 0; i < TARGET_MAX; i++) {
+        GlTarget *t = &s_targets[i];
+        char path[1200];
+        if (!t->fbo)
+            continue;
+        snprintf(path, sizeof path, "%s/flip%06u_target%08X_%ux%u.ppm", s_capture_dir,
+                 (unsigned)s_frame, t->color_va, t->lw, t->lh);
+        dump_target_to(t, path);
+        snprintf(path, sizeof path, "%s/flip%06u_target%08X_%ux%u_alpha.ppm", s_capture_dir,
+                 (unsigned)s_frame, t->color_va, t->lw, t->lh);
+        dump_target_alpha_to(t, path);
+        n++;
+    }
+    fprintf(stderr, "[CAPTURE] flip %u: %u draws so far, %d render targets written\n",
+            (unsigned)s_frame, s_capture_draw, n);
 }
 
 /* [thug] Brightness (THUG_BRIGHTNESS, the overlay's slider): the presented
@@ -3191,6 +3527,24 @@ static void gl_flip(void)
             t0 = now;
         }
     }
+    {   /* THUG_GL_CAPTURE_AT=<flip>: the same capture, for scripted runs */
+        static long at = -2;
+        if (at == -2) {
+            const char *e = getenv("THUG_GL_CAPTURE_AT");
+            at = e && *e ? atol(e) : -1;
+        }
+        if (at >= 0 && (long)s_frame == at)
+            s_capture_req = 1;
+    }
+    if (s_capture_left > 0) {
+        capture_flip();
+        if (--s_capture_left == 0)
+            fprintf(stderr, "[CAPTURE] done: %s\n", s_capture_dir);
+    } else if (s_capture_req) {
+        s_capture_req = 0;
+        if (capture_begin())
+            s_capture_left = 2;
+    }
     apply_requests();
     s_cur_draws = s_cur_tris = s_cur_fail = s_cur_uploads = 0;
     __atomic_add_fetch(&s_flip_count, 1, __ATOMIC_RELAXED);
@@ -3322,6 +3676,7 @@ int nv2a_pb_gl_init(void)
     e = getenv("THUG_FPS_LIMIT");
     if (e && *e)
         s_fps_limit = atoi(e) > 0 ? atoi(e) : 0;
+    s_zeta_log = getenv("THUG_GL_ZETA_LOG") != NULL;
     e = getenv("THUG_BRIGHTNESS");
     if (e && *e && atof(e) > 0.0)
         nv2a_pb_gl_set_brightness((float)atof(e));

@@ -73,6 +73,15 @@ Facts about the binary and the decisions made around it. Keep this current.
   `scripts/extract.sh` and `scripts/play.sh` are gone; the build uses
   `build/bin/thug-extract`, the same code as a command. The log goes to
   `~/.local/state/thug-pc-port/thug.log` unless stderr is redirected.
+- **2026-11-11: The reset transition's trail is skipped** (owner's call: it
+  looks bad; kept after the real fault below was found). Bailing into water or leaving the play area makes the game
+  blend each frame over the last at 15% for about a second (see "Reset
+  transition" below), which leaves trails of copies. The renderer draws that
+  one composite unblended (`is_trail_composite`), so each frame replaces the
+  last. A deliberate departure from the game's own look, the only one so
+  far; `THUG_GL_KEEP_TRAILS=1` restores it. The sharp repeated copies the
+  owner saw were mostly a renderer fault, though: the scene surface's depth
+  was never cleared (see "Shared depth surface").
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.
@@ -82,7 +91,8 @@ Facts about the binary and the decisions made around it. Keep this current.
 These are general fixes, not THUG-specific ones, made in place in the
 vendored `vendor/xboxrecomp` (upstream base: `vendor/README.md`).
 They should go upstream. The first column is where a change was first
-carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`.
+carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`,
+`vendor` a change made after vendoring.
 
 | Patch | Fix | Found by |
 |---|---|---|
@@ -113,6 +123,7 @@ carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`.
 | 0001 | `nv2a_pb_exec.c`: with `RECOMP_TRACE_TEX0`, the trace also prints the program constants (c0-c15), the first vertex's input, and the array, draw and polygon-offset methods back to both the previous draw and the vertex-array setup in force. | Diagnostic |
 | 0001 | `xinput_device.c`, `xinput_xbox.h`: `xbox_InputSetBlocked(on)`. While set, every port reports a connected pad at rest with a new packet number, so a host overlay can take the input focus without the title seeing a disconnect. Test: `tests/input_sdl_hotplug`. | The F1 settings overlay |
 | 0001 | `xinput_device.c`, `xinput_xbox.h`: `xbox_InputSetRumbleScale(scale)` multiplies every motor speed the title asks for (0 = off, which also stops the motors); `xbox_InputSetBlocked(1)` now stops the motors too and passes no rumble until cleared. Test: `tests/input_sdl_hotplug`. | The overlay's vibration setting; a pad that kept rumbling while the overlay was open |
+| vendor | `nv2a_pb_exec.c`: the fixed-function path generates texture coordinates (`SET_TEXGEN_*` 0x03C0: eye- and object-linear planes at 0x0840, sphere, normal and reflection maps) and applies texture matrices (`SET_TEXTURE_MATRIX_ENABLE` 0x0420, matrices at 0x06C0, rows of four, a 2D coordinate read as (s, t, 0, 1)), as xemu's `vsh-ff.c`. `RECOMP_FFP_RAW_TEXCOORDS=1` restores the raw streams. Test: `tests/nv2a_ffp_backend`. | Manhattan's water stood still, and reflection-mapped surfaces showed their raw coordinate stream: THUG scrolls textures and lays reflections through these |
 | 0001 | `apu.h`, `apu_core.c`: `xbox_ApuSetVolume(gain)`, a host master volume on every period sent to the audio device (after the `RECOMP_APU_WAV` dump, which keeps the title's own level), ramped across one period so a change never clicks; `apu_apply_gain` does the scaling. New test: `tests/apu_volume`. | The overlay's volume and "mute in background" |
 | 0001 | `nv2a_pb_exec.c`: `RECOMP_TRACE_TEX0=<hex>[,n]` prints how the first n batches sampling that texture in stage 0 were transformed and lit (program or fixed function, colour material, lights, attributes). | Diagnostic |
 
@@ -146,6 +157,10 @@ hide stray accesses.
 | Main menu skater | vertex program, skinned (`0x83390000` texture) | Drawn black on purpose: the program's colour output is RGB 0 with the alpha animating (a fading silhouette). Not a missing texture. |
 | Depth state | `SET_CONTROL0` = `0x00100001`; colour clear `0x00506070` | Z-buffer, not w-buffer (bit 16 clear), fixed-point D24S8. Depth bias comes in two forms: D3D's (`0x384`/`0x388` then all three enables `0x330`–`0x338`, negative amounts, toward the camera) and a raw form at the start of the frame that writes only `0x338`, with +2/+4. |
 | Skater-select room, left monitor | logo decal texture `0x831E1000` (32×32 DXT5), additive, depth writes on, alpha test ≥ 1, no bias; drawn before the monitor's screen (`0x831E0000`) | The logo sits about 180 depth units in front of the screen (same fixed-function transform), so wherever its alpha passes it blocks the screen, and the clear colour shows through as a blue-grey shape. The game's own commands produce it; not checked against a console. |
+| Reset transition (water bail, out of bounds) | scene rendered into `0x80ABC000` (640x480, LIN_X8R8G8B8) instead of the 2x-wide buffer, then one quad over the wide buffer (`0x804E0000`), not cleared: colour v0 x t0, alpha v0.a (`0x26`, 0.15) x t0.a, SRC_ALPHA / ONE_MINUS_SRC_ALPHA, depth ALWAYS | An accumulation trail for about a second: each frame keeps 85% of the last, so anything moving leaves fading copies. Captured from the owner's game (F10) and a scripted out-of-bounds run. The X8 surface must read alpha 1 (it did not: the HUD region, alpha about 0.6 in the surface, faded at the wrong rate). Whether the original shows the same trail is not confirmed. Skipped by default (decision log). |
+| Shared depth surface | zeta `0x80864000`, used by the screen buffer `0x804E0000` and the transition's scene surface `0x80ABC000` | Each frame clears it (depth + stencil, flags 3) with `0x804E0000` bound, then draws the scene into `0x80ABC000` with the same zeta. The renderer's targets each own a depth buffer, so a zeta clear now reaches every target that last drew with that zeta; contents are still not shared. |
+| Scrolling textures | fixed-function texture matrices; Manhattan: `0x83484000`, `0x83487000` (stage 0) | The translation column moves every frame (about -0.0002 a frame in s, twice that in t): the game animates water and similar surfaces this way, not by rewriting UVs. |
+| Reflection maps | `SET_TEXGEN` REFLECTION_MAP on S, T, R with a matrix of scale 0.5, offset 0.5 (e.g. `0x832DA000`, `0x8325D000`, `0x83272000`) | The eye-space reflection vector folded onto a 2D environment map; stage mode stays PROJECT2D/3D, no cube maps seen. |
 | Sky dome | level skies (seen in New Jersey) | Its top vertices project tens of millions of pixels off screen. A renderer that drops "absurd" positions loses the top of the sky (seen as a hard edge between the dome and the clear colour). |
 | Culling | every draw sets cull face `GL_FRONT` (`0x404`), front face `GL_CW` (`0x900`) | With culling enabled in the GPU renderer, world triangles and the sky (both negative signed area in surface pixels, y down) are culled together while the skater draws correctly, so fixed-function and vertex-program output disagree on winding somewhere. Culling stays off (`RECOMP_GL_NO_CULL=1`) until that is understood. Strips also need `RECOMP_STRIP_ALT_WINDING=1` once culling is on. |
 | Load-wait loop | `sub_00106EE0` (loop `0x00106F50`–`0x00106F6B`) | Spins, waiting a vblank each pass (`sub_00174090`), until `sub_00031C40` says the streams are buffered. Fixed by `RECOMP_ASYNC_IO` (see the stream start below). |

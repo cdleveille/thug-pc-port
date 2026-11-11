@@ -2040,9 +2040,10 @@ static uint32_t vertex_color(uint32_t index)
  * fixed-function batch shares the program path's near-plane clipping,
  * texturing, combiners and depth buffer.
  *
- * ponytail: no texture-coordinate generation or texture matrices (texture
- * coordinates are taken from the attribute streams as they are), no fog
- * coordinate, no specular, no point sprites. */
+ * Texture coordinates follow SET_TEXGEN_* and SET_TEXTURE_MATRIX_ENABLE
+ * (ffp_texcoords below).
+ *
+ * ponytail: no fog coordinate, no specular, no point sprites. */
 
 /* Is this batch transformed by the fixed-function unit? Inline-array batches
  * are left to the screen-space path, as they were before. */
@@ -2212,6 +2213,130 @@ static int lit_color(uint32_t index, float out[4])
     return 1;
 }
 
+/* Fixed-function texture coordinates, as xemu's vsh-ff.c generates them:
+ * per stage and per component (S, T, R, Q), SET_TEXGEN_* (0x03C0 + 16 * stage
+ * + 4 * component) picks the source --
+ *   0       the vertex's texture-coordinate stream, as fetched
+ *   0x2400  EYE_LINEAR     dot(SET_TEXGEN_PLANE, eye-space position)
+ *   0x2401  OBJECT_LINEAR  dot(SET_TEXGEN_PLANE, object-space position)
+ *   0x2402  SPHERE_MAP     the reflection vector folded into a sphere map
+ *   0x8511  NORMAL_MAP     the eye-space normal
+ *   0x8512  REFLECTION_MAP the eye-space reflection of the eye-to-vertex vector
+ * (planes at 0x0840 + 64 * stage + 16 * component) -- then, with
+ * SET_TEXTURE_MATRIX_ENABLE (0x0420 + 4 * stage), the stage's 4x4 matrix
+ * (0x06C0 + 64 * stage, rows of four, out[r] = sum(m[4r + k] * in[k]), the
+ * same layout as the composite matrix). A missing component reads (0,0,0,1),
+ * so a matrix's fourth column translates a 2D coordinate.
+ *
+ * Without this every coordinate came straight from the streams: Tony Hawk's
+ * Underground scrolls its water and lays its reflection maps through these
+ * (texture matrices on stages 0-2 from the menus on, REFLECTION_MAP on S, T
+ * and R in levels), so water stood still and shiny surfaces showed the raw
+ * stream instead of a reflection.
+ *
+ * ponytail: normals go through the model-view matrix itself, as in
+ * lit_color(); no skinning. */
+static int ffp_texgen_on(uint32_t st)
+{
+    const uint32_t *g = &s_reg[(0x03C0 + 16u * st) / 4];
+    return (g[0] | g[1] | g[2] | g[3]) != 0;
+}
+
+/* RECOMP_FFP_RAW_TEXCOORDS=1: the coordinate streams as they are, as before
+ * texgen and texture matrices were applied (an A/B switch). */
+static int ffp_texcoords_active(void)
+{
+    static int raw = -1;
+    uint32_t st;
+    if (raw < 0)
+        raw = getenv("RECOMP_FFP_RAW_TEXCOORDS") != NULL;
+    if (raw)
+        return 0;
+    for (st = 0; st < 4; st++)
+        if (ffp_texgen_on(st) || s_reg[(0x0420 + 4u * st) / 4])
+            return 1;
+    return 0;
+}
+
+static void ffp_texcoords(uint32_t index, const float obj[4], Nv2aVshOutput *out)
+{
+    const float *mv = (const float *)&s_reg[0x0480 / 4];
+    float eye[4], n[3] = { 0.0f, 0.0f, 1.0f }, r[3] = { 0.0f, 0.0f, 0.0f };
+    float sphere[2] = { 0.5f, 0.5f };
+    int have_eye = 0, have_dirs = 0;
+    uint32_t st, j, k;
+
+    for (st = 0; st < 4; st++) {
+        const uint32_t *gen = &s_reg[(0x03C0 + 16u * st) / 4];
+        float *t = out->tex[st];
+
+        for (j = 0; j < 4; j++) {
+            uint32_t mode = gen[j];
+            const float *plane;
+            if (!mode)
+                continue;
+            if (!have_eye) {
+                for (k = 0; k < 4; k++)
+                    eye[k] = mv[4 * k] * obj[0] + mv[4 * k + 1] * obj[1]
+                           + mv[4 * k + 2] * obj[2] + mv[4 * k + 3] * obj[3];
+                have_eye = 1;
+            }
+            if (!have_dirs && (mode == 0x2402 || mode == 0x8511 || mode == 0x8512)) {
+                float nrm[4], u[3], len, d;
+                if (fetch_attr(&s_gpu.attr[2], index, nrm)) {
+                    for (k = 0; k < 3; k++)
+                        n[k] = mv[4 * k] * nrm[0] + mv[4 * k + 1] * nrm[1]
+                             + mv[4 * k + 2] * nrm[2];
+                    len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                    if (len > 1e-8f) { n[0] /= len; n[1] /= len; n[2] /= len; }
+                }
+                len = sqrtf(eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]);
+                for (k = 0; k < 3; k++)
+                    u[k] = len > 1e-8f ? eye[k] / len : 0.0f;
+                d = n[0] * u[0] + n[1] * u[1] + n[2] * u[2];
+                for (k = 0; k < 3; k++)
+                    r[k] = u[k] - 2.0f * d * n[k];
+                d = 2.0f * sqrtf(r[0] * r[0] + r[1] * r[1] + (r[2] + 1.0f) * (r[2] + 1.0f));
+                if (d > 1e-8f) {
+                    sphere[0] = r[0] / d + 0.5f;
+                    sphere[1] = r[1] / d + 0.5f;
+                }
+                have_dirs = 1;
+            }
+            plane = (const float *)&s_reg[(0x0840 + 64u * st + 16u * j) / 4];
+            switch (mode) {
+            case 0x2400:                                    /* EYE_LINEAR */
+                t[j] = plane[0] * eye[0] + plane[1] * eye[1]
+                     + plane[2] * eye[2] + plane[3] * eye[3];
+                break;
+            case 0x2401:                                    /* OBJECT_LINEAR */
+                t[j] = plane[0] * obj[0] + plane[1] * obj[1]
+                     + plane[2] * obj[2] + plane[3] * obj[3];
+                break;
+            case 0x2402:                                    /* SPHERE_MAP */
+                t[j] = j < 2 ? sphere[j] : 0.0f;
+                break;
+            case 0x8511:                                    /* NORMAL_MAP */
+                t[j] = j < 3 ? n[j] : 1.0f;
+                break;
+            case 0x8512:                                    /* REFLECTION_MAP */
+                t[j] = j < 3 ? r[j] : 1.0f;
+                break;
+            default:
+                break;
+            }
+        }
+        if (s_reg[(0x0420 + 4u * st) / 4]) {
+            const float *m = (const float *)&s_reg[(0x06C0 + 64u * st) / 4];
+            float in[4];
+            memcpy(in, t, sizeof in);
+            for (j = 0; j < 4; j++)
+                t[j] = m[4 * j] * in[0] + m[4 * j + 1] * in[1]
+                     + m[4 * j + 2] * in[2] + m[4 * j + 3] * in[3];
+        }
+    }
+}
+
 /* One fixed-function vertex, in the shape a vertex program produces. */
 static int ffp_vertex(uint32_t index, Nv2aVshOutput *out)
 {
@@ -2247,6 +2372,8 @@ static int ffp_vertex(uint32_t index, Nv2aVshOutput *out)
     fetch_attr(texcoord_attr(), index, out->tex[0]);
     for (st = 1; st < 4; st++)
         fetch_attr(&s_gpu.attr[9 + st], index, out->tex[st]);
+    if (ffp_texcoords_active())
+        ffp_texcoords(index, in, out);
     return 1;
 }
 
@@ -3953,7 +4080,9 @@ static void raster_batch_program(void)
     xf_set_viewport();
     {
         const VertexAttr *tc = texcoord_attr();
-        s_xf_no_tex = !batch_uses_program() && !(tc->offset && tc->stride);
+        /* Coordinates generated for stage 0 count as coordinates. */
+        s_xf_no_tex = !batch_uses_program() && !(tc->offset && tc->stride)
+                      && !(ffp_texcoords_active() && ffp_texgen_on(0));
     }
     if (batch_uses_program()) {
         s_gpu.batches_program++;
