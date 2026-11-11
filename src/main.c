@@ -49,6 +49,10 @@
 
 #include <xbox/xboxrecomp.h>
 
+#include "gpu/nv2a_pb_gl.h"
+#include "host/host_window.h"
+#include "ui/settings.h"
+
 /* ── Guest register file (defined thread-local in xbox_memory_layout.c) ──
  *
  * RECOMP_TLS is required: a plain extern to a thread-local definition
@@ -81,6 +85,9 @@ int xbox_HostWindowMain(int (*guest_main)(void));
  * runtime starts it: the title calls it once guest memory is mapped. */
 void xbox_OhciInit(void);
 void xbox_OhciReport(void);
+
+/* src/kernel/nv2a_pb_exec.c: semaphore releases write the tracked fence word. */
+void nv2a_pb_semaphore_from_fence_word(int on);
 
 /* ── Title constants ───────────────────────────────────────── */
 
@@ -291,6 +298,28 @@ static void thug_set_default_env(void)
      * number the APU resolved the stream's address into the window, and
      * voice lists came back with garbage handles (0x1ACD, 0x4A8B...). */
     set_default("RECOMP_CONTIG_AVOID_IMAGE", "1");
+    /* RECOMP_HEAP_RECLAIM: MmFreeContiguousMemory / NtFreeVirtualMemory give
+     * memory back. Without it nothing is ever freed (allocs=2027 frees=0 by
+     * the main menu); loading a level after the menus exhausted the 64 MB
+     * contiguous arena, a texture failed to allocate and the title called
+     * exit() -- on the console it never runs out, because it frees the menu
+     * first. */
+    set_default("RECOMP_HEAP_RECLAIM", "1");
+    /* GPU renderer: face culling off. The renderer's culling winding is wrong
+     * for THUG (every other triangle of the 3D meshes vanished); drawing both
+     * faces costs nothing measurable on a desktop GPU and the depth test hides
+     * back faces. TODO: fix the winding and turn this back off. */
+    set_default("RECOMP_GL_NO_CULL", "1");
+    /* Widescreen: the dashboard's 16:9 setting, which THUG supports natively.
+     * It then sets D3DPRESENTFLAG_WIDESCREEN, widens its field of view (Hor+)
+     * and lays its HUD out for 16:9, rendering anamorphic into its 640x480
+     * surfaces; the GPU renderer gives the x axis the extra resolution and
+     * presents 16:9. THUG_WIDESCREEN=0 keeps 4:3. */
+    {
+        const char *ws = getenv("THUG_WIDESCREEN");
+        if (!(ws && ws[0] == '0'))
+            set_default("RECOMP_WIDESCREEN", "1");
+    }
 }
 
 /* ── Boot ──────────────────────────────────────────────────── */
@@ -326,8 +355,20 @@ static int thug_guest_main(void)
      * device+0x30 points at the word the GPU writes as it consumes the
      * pushbuffer. sub_00190900 spins until that word passes its target, so
      * without a GPU behind it the first Present() that changes display mode
-     * waits forever. The NV2A poll thread copies submitted into consumed. */
-    xbox_Nv2aMirrorFence(THUG_D3D_DEVICE_PTR, 0x2C, 0x30);
+     * waits forever. The NV2A poll thread copies submitted into consumed.
+     *
+     * THUG_FENCE_SEMAPHORE=1 (experimental) has the executor write the word
+     * from D3D's own semaphore releases instead, so it reports what has really
+     * been executed. D3D then sees a GPU that is behind and, past 0x2400 bytes,
+     * patches a software-method wake-up into the pushbuffer and waits on the
+     * GPU's fence latch for it -- an interrupt this runtime does not deliver --
+     * so the title hangs at its save check. Kept for whoever implements it. */
+    if (getenv("THUG_FENCE_SEMAPHORE") && *getenv("THUG_FENCE_SEMAPHORE") == '1') {
+        xbox_Nv2aTrackFence(THUG_D3D_DEVICE_PTR, 0x2C, 0x30);
+        nv2a_pb_semaphore_from_fence_word(1);
+    } else {
+        xbox_Nv2aMirrorFence(THUG_D3D_DEVICE_PTR, 0x2C, 0x30);
+    }
 
     /* Controllers: the USB host controllers XAPI enumerates pads through.
      * Inert unless RECOMP_USB is set (a default, see thug_set_default_env). */
@@ -375,7 +416,11 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
+    /* The player's saved settings (F1 overlay), exported as the THUG_*
+     * variables the rest of start-up reads; a variable already set wins. */
+    thug_settings_load();
     thug_set_default_env();
+    thug_settings_apply_audio_input();   /* master volume, vibration strength */
 
 #if defined(__linux__)
     /* THUG_DEBUG_ATTACH: let any debugger attach (Yama ptrace_scope 1 allows
@@ -396,9 +441,22 @@ int main(int argc, char **argv)
 #if defined(_WIN32)
     return thug_guest_main();
 #else
-    /* With RECOMP_FB_WINDOW set this opens the framebuffer window on the main
-     * thread and runs the guest on a pthread; otherwise it calls straight
-     * through. */
+    /* The GPU renderer (src/gpu): SDL video and the GL context are created
+     * here, on the main thread, before the window loop takes it over; the
+     * executor's poll thread only makes the context current to draw. Returns
+     * 0 -- and the CPU rasteriser carries on -- with RECOMP_PB_GL=0 or no
+     * display. */
+    if (nv2a_pb_gl_init()) {
+        fprintf(stderr, "[thug] GPU renderer active (RECOMP_PB_GL=0 for the CPU rasteriser)\n");
+        /* The renderer opened the game's window: pump it here, run the guest
+         * on a pthread. Headless, there is no window and this calls through. */
+        if (nv2a_pb_gl_window())
+            return thug_host_window_main(thug_guest_main);
+    }
+
+    /* CPU rasteriser: with RECOMP_FB_WINDOW set this opens the framebuffer
+     * window on the main thread and runs the guest on a pthread; otherwise it
+     * calls straight through. */
     return xbox_HostWindowMain(thug_guest_main);
 #endif
 }

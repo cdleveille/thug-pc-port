@@ -33,6 +33,7 @@
  * different variable, and an override that sets it sets nothing the caller
  * reads. */
 #include "recomp_types.h"
+#include "ui/settings.h"      /* g_thug_settings: the overlay's live values */
 
 /* ── Replacements ──────────────────────────────────────────── *
  *
@@ -58,6 +59,86 @@ void sub_00178B85(void)
 {
     g_eax = 0;      /* STATUS_SUCCESS: media verified */
     g_esp += 4;     /* pop the guest return address (`ret`) */
+}
+
+/* Host monotonic clock, in seconds. */
+#if defined(_WIN32)
+#include <windows.h>
+static double host_seconds(void)
+{
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (!freq.QuadPart)
+        QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+}
+#else
+#include <time.h>
+static double host_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+#endif
+#include <stdlib.h>
+
+/* The engine's per-frame frame-length update (Neversoft's Tmr), called once
+ * per game frame from the main loop (call at 0x000309F2).
+ *
+ * The original averages the vblanks between the last four swaps -- the D3D
+ * swap callback (sub_00173ED0) records each one in the ring at 0x35F040 --
+ * clamping each to 1..4. The result, in vblanks, goes to 0x35F030 (float,
+ * at least 1.0) and the unclamped average to 0x35F038 (double).
+ * FrameLength() (sub_001741F0) is slomo / refresh * [0x35F030], and every
+ * dt-scaled system (skater physics, animation, the camera) runs on it.
+ *
+ * A frame shorter than a vblank therefore still counted as a whole one: at
+ * 144 fps the game ran 2.4 times too fast. Here the same two values are the
+ * real host time between frames, in vblanks of the title's own refresh rate
+ * (0x2408B0), averaged over four frames as before and capped at four vblanks
+ * as before, with no floor of one. THUG_VBLANK_TIMING=1 restores the
+ * original whole-vblank arithmetic (so does the overlay's switch).
+ *
+ * Original: cdecl, no arguments, plain `ret`; returns the average in xmm0. */
+void sub_00173F80(void)
+{
+    static double last, hist[4] = { 1.0, 1.0, 1.0, 1.0 };
+    static unsigned n;
+    double avg, raw;
+    float refresh;
+
+    /* THUG_VBLANK_TIMING, or the overlay's "Original 60 Hz timing", read
+     * every frame so the switch takes effect at once. */
+    if (g_thug_settings.vblank_timing) {
+        last = 0.0;                     /* the real clock restarts cleanly */
+        uint32_t i, clamped = 0, sum = 0;
+        for (i = 0; i < 4; i++) {
+            uint32_t d = MEM32(0x35F040 + i * 4);
+            sum += d;
+            clamped += d < 1 ? 1 : (d > 4 ? 4 : d);
+        }
+        avg = clamped * 0.25;
+        raw = sum * 0.25;
+    } else {
+        double now = host_seconds(), dt;
+        refresh = MEMF(0x2408B0);
+        if (!(refresh > 1.0f && refresh < 1000.0f))
+            refresh = 60.0f;
+        dt = last > 0.0 ? (now - last) * refresh : 1.0;
+        last = now;
+        if (!(dt > 0.01))
+            dt = 0.01;              /* 6000 fps: a floor, not a frame rate */
+        if (dt > 4.0)
+            dt = 4.0;               /* a load or a hitch: as the original */
+        hist[n++ & 3] = dt;
+        avg = raw = (hist[0] + hist[1] + hist[2] + hist[3]) * 0.25;
+    }
+    MEMF(0x35F030) = (float)avg;
+    MEMD(0x35F038) = raw;
+    g_xmm0.f[0] = (float)avg;
+    g_esp += 4;                     /* `ret` */
 }
 
 /* ── Manual function overrides ─────────────────────────────── */

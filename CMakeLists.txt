@@ -10,10 +10,12 @@ cmake_minimum_required(VERSION 3.20)
 # runtime libraries into one native executable.
 # ============================================================================
 
-project(thug C)
+project(thug C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 
@@ -45,15 +47,48 @@ endif()
 add_executable(thug
     src/main.c
     src/recomp_manual.c
+    src/gpu/nv2a_pb_gl.c
+    src/host/host_window.c
+    src/ui/settings.c
     ${THUG_GEN_SOURCES}
 )
 
 target_include_directories(thug PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp/gen
     ${XBOXRECOMP_DIR}/include
+    # nv2a_backend.h / nv2a_combiner.h: the executor's back-end interface the
+    # GPU renderer (src/gpu) implements.
+    ${XBOXRECOMP_DIR}/src/kernel
 )
+
+# GPU renderer: OpenGL 3.3 through SDL2 + libepoxy, as the toolkit's POSIX
+# graphics already use. On Windows the file compiles to a stub for now.
+if(NOT WIN32)
+    find_package(SDL2 REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(THUG_EPOXY REQUIRED epoxy)
+    target_link_libraries(thug PRIVATE SDL2::SDL2 ${THUG_EPOXY_LINK_LIBRARIES})
+    target_include_directories(thug PRIVATE ${THUG_EPOXY_INCLUDE_DIRS})
+
+    # The in-game settings overlay (F1): Dear ImGui, a git submodule, drawn
+    # by the GPU renderer through epoxy.
+    set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+    if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
+        message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. "
+                            "Run: git submodule update --init --recursive")
+    endif()
+    target_sources(thug PRIVATE
+        src/ui/overlay.cpp
+        src/ui/imgui_gl_backend.cpp
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp)
+    target_include_directories(thug PRIVATE ${IMGUI_DIR})
+endif()
 
 target_link_libraries(thug PRIVATE xboxrecomp)
 

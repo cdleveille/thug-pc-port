@@ -13,18 +13,307 @@ the next step. Record failures here as well as successes.
 - [x] D3D device created
 - [x] First frame presented (pushbuffer executor, CPU rasteriser)
 - [x] Window (SDL2 + OpenGL on Linux): frames, plus resolution and FPS in the title bar
-- [~] Front-end menus: main menu, story mode and the pre-made skater select
-  render, then the game stalls (corrupted DirectSound heap)
-- [ ] In-game (skating)
+- [x] Front-end menus: main menu, story mode, free skate, skater select and
+  level select
+- [x] In-game (skating): free skate New Jersey loads and runs
+- [x] GPU renderer (OpenGL 3.3, `src/gpu/nv2a_pb_gl.c`): direct present,
+  internal resolution scaling
 - [x] Audio: plays through PipeWire (confirmed by the owner, 2026-11-10)
 - [x] Input: a real XInput pad works through SDL2 (owner-verified: A or
   Start skips the intro)
 - [x] Movies (Bink): Activision, Neversoft and intro movies render
 - [ ] Windows build
-- [ ] Widescreen / native resolution
-- [ ] Unlocked frame rate
+- [x] Widescreen (native 16:9, Hor+) and native resolution
+- [x] Unlocked frame rate with real-time game logic
+- [ ] Shadows (depth textures)
+- [ ] 60 fps or better in the heaviest views (vertex programs still run on
+  the CPU)
 
 ## Log
+
+### 2026-11-10: antialiasing, more overlay settings
+
+- **Owner request:** antialiasing (2x, 4x, 8x) in the overlay, plus any other
+  quality-of-life settings worth having.
+- **MSAA.** Every render target can carry a multisampled colour and
+  depth-stencil pair (`THUG_MSAA`, live from the overlay). Draws and clears go
+  there; the single-sample texture becomes the resolve, done lazily when
+  something reads it: the game's own 2×-wide AA pass (once a frame), the
+  present, a dump. Changing the sample count or the scale reallocates every
+  target and carries its contents across. Checked with frame dumps: slanted
+  edges, the skater's hair and the chain-link fences in New Jersey are smooth
+  at 4x and 8x.
+- **Alpha-tested edges.** Plain MSAA does nothing for cutouts (fences,
+  foliage, hair). With GL_ARB_sample_shading, an alpha-tested draw writes
+  `gl_SampleMask` from how far its alpha is from the reference, measured in
+  pixels (`fwidth`), so the cut is antialiased like a polygon edge and keeps
+  its shape. THUG never disables blending (opaque surfaces blend ONE, ZERO;
+  cutouts blend SRC_ALPHA over an alpha test with references from 1 to
+  0x80), so both of those qualify; additive and modulating blends do not, and
+  neither does `GEQUAL 0`, which always passes.
+  - First attempt drew nothing: a shader that writes `gl_SampleMask` on one
+    path must write it on all of them, or coverage is undefined (NVIDIA:
+    none).
+- **Cost** (GPU time per frame from a timer query, skater-select room):
+  - 720p: 7.0 ms at every setting; the executor is the limit (about 143 fps).
+  - 4K: 24-25 ms off, within a few percent at 4x and 8x, though runs vary.
+    At 4K the GPU is already the limit without MSAA (100% busy, about 40 fps
+    in that room): the generic combiner shader is expensive over THUG's
+    2×-wide buffer. Specialising it is the next GPU optimisation.
+- **Also added to the overlay:**
+  - Brightness: a gamma pass on the presented frame (only when not 100%).
+  - Volume and "mute in background" (toolkit: a master gain at the APU's
+    output, ramped so it never clicks).
+  - Vibration strength (toolkit: a rumble scale; the pad also stops rumbling
+    while the overlay is open).
+  - Restore defaults (keeps the window mode).
+  - The mouse cursor hides after 2 s still in a window, and always in
+    fullscreen unless the overlay is open.
+- **Diagnostics:** `THUG_GL_STATS` adds GPU ms, resolves and alpha-to-coverage
+  draws; `THUG_BENCH_MSAA`; `THUG_GL_DEBUG` (KHR_debug).
+
+### 2026-11-10: face artifacts, sky seam
+
+- **Owner report:** artifacts around the skater's face, and the sky looks
+  wrong, with a sharp contrast between two areas.
+- **Face.** Frame dumps of the skater-select screen with
+  `THUG_GL_NO_POLYOFF=1` and `THUG_GL_NO_MIPS=1` pointed at depth bias:
+  without it, the face was clean. `RECOMP_GL_PROBE` on an eye showed bias
+  on every draw. The executor read the fill enable from `0x340`, which is
+  `SET_ALPHA_REF` (THUG keeps it at 1), instead of
+  `SET_POLY_OFFSET_FILL_ENABLE` (`0x338`). Every draw took the last factor
+  and units set, and the eyes and mouth (drawn without bias) lost to the
+  face under them. Fixed in the toolkit; its test now checks that `0x340`
+  does not enable bias.
+- **Depth range.** The renderer put the title's z in half the depth buffer
+  (window z 0.5 to 1), which halved its precision and doubled each bias
+  unit. Window depth is now the title's z.
+- **Sky.** About 115 triangles a frame never reached GL: the top of the sky
+  dome projects tens of millions of pixels off screen, past the renderer's
+  1e6 sanity bound, so the clear colour showed across the top of the sky.
+  The bound is now 1e12, and GL clips the rest. New Jersey now drops 0
+  triangles a frame (`THUG_GL_STATS` counts them), and the dome is whole.
+- **Monitor logo (skater-select room).** With the bias fixed, a blue-grey
+  shape appears on the left monitor behind the skater. It looks native:
+  - A 32×32 logo decal (`0x831E1000`: additive, depth writes on, no bias)
+    is drawn before the monitor's screen and sits about 180 depth units in
+    front of it. Both use the same fixed-function transform.
+  - Wherever the logo's alpha passes the alpha test, it writes depth. The
+    screen then fails the test there, and the game's own clear colour
+    (`0x506070`) shows through.
+  - The method trace shows no bias enabled for it, so hardware given the
+    same commands draws the same. This hasn't been checked against a
+    console capture. The misread bias had been hiding it.
+- **Diagnostics added:**
+  - `THUG_GL_NO_POLYOFF` and `THUG_GL_NO_MIPS`.
+  - `THUG_GL_POLYOFF_LOG`: the distinct offsets and `SET_CONTROL0` values.
+    THUG uses `0x00100001`, so no w-buffer.
+  - The probe prints each triangle's depth at the pixel.
+  - `RECOMP_TRACE_TEX0` lists the poly-offset methods too.
+
+### 2026-11-10: performance in levels
+
+- **Owner report:** skating New Jersey at 1080p rarely holds 60 fps; is the
+  flicker fix to blame?
+- **Not the fix:** the same route with the old and new pushbuffer walk gives
+  the same frame rate for the same draw count.
+- **Where the time goes** (`RECOMP_EXEC_PROFILE=1`): the title's thread
+  waits in D3D's kickoff (`sub_00190730`, the PFB flush handshake) while the
+  executor works, so the executor's time is the frame time. Heaviest view
+  before: 22 ms (vertex programs 310 ns a vertex, GL submission 5.5 us a
+  draw).
+- **Tried and reverted:** acknowledging the kickoff mid-walk (and publishing
+  GET) to overlap the two. With the mirrored fence it either let D3D overwrite
+  unread commands (the mirror ticked mid-walk) or sent D3D into the
+  software-method wake-up it cannot leave (GET behind a fence). It needs the
+  semaphore fence plus the GPU's software-method interrupt.
+- **Done:**
+  - GL submission: sampler objects, bindings tracked per unit, constant
+    uniforms set once, no stage-0 unbind per draw, vertex data written
+    straight into a persistently mapped ring (ARB_buffer_storage, fenced
+    8 MB segments). About 2.5 us a draw, from 5.5.
+  - Vertex programs: run 8 vertices at a time (toolkit), inputs resolved per
+    batch, unique vertices transformed once and assembled through a map,
+    no copies for unclipped triangles. Executor time per index 155-170 ns,
+    from 235-260.
+- **Result** (headless, 1080p, same scripted route, 2 runs): mean 83-84 fps
+  at about 1,000 draws a frame (min 49-60), against 60-77 fps at 680-930
+  draws (min 38-41) before. The heaviest views are still around 50.
+- **Next, if more is needed:** indexed draws to the back end (convert each
+  unique vertex once), a GL thread so submission overlaps transform, and the
+  software-method interrupt so the title and the executor can overlap.
+
+### 2026-11-10: the flicker, found and fixed
+
+- **Owner report:** a one-frame flash, most visible on the main menu (the
+  background panel goes flat grey-blue), also in levels; the menu skater is a
+  silhouette.
+- **Detector.** `THUG_GL_FLICKER=<dir>` reads back every presented frame and
+  saves any frame unlike both neighbours, with per-frame counters. 83 hits in
+  80 s on the main menu: exploded geometry (dropped non-finite vertices), the
+  background panel gone, once two frames' draws before one flip.
+- **Cause.** `RECOMP_TRACE_TEX0` on the panel's texture: in the bad frame the
+  panel was drawn with the skater's vertex arrays, and the methods before it
+  had no array setup; D3D had sent it, in commands the executor never ran.
+  The default pushbuffer scan handled ring wraps by guessing the ring's
+  bounds from the lowest and highest PUT seen, so each wrap could drop this
+  lap's first commands or replay stale ones. A walk that follows the JUMP and
+  ends at PUT (toolkit) gives 0 hits in 90 s of menu and in a level.
+- **Side trip.** A real, semaphore-driven fence (instead of the mirror) cut
+  the hits first, but it was the wrap all along, and it hangs at the save
+  check (D3D's software-method wake-up). Kept as `THUG_FENCE_SEMAPHORE=1`.
+  Game timing was ruled out too.
+- **Silhouette:** intended. The program outputs RGB 0 with animated alpha.
+
+### 2026-11-10: settings overlay (F1), resolution benchmark
+
+- **Owner request:** try 1080p instead of 4K, and an in-game overlay to
+  change settings on the fly.
+- **Benchmark.** `THUG_BENCH_SCALES` cycles the internal scale in one running
+  scene (headless, RTX 4080, 185 draws a frame), five rounds each:
+  3840×2160 about 71 fps, 1920×1080 about 109, 853×480 about 134. So at 4K
+  the GPU work is a real cost, most likely the generic register-combiner
+  fragment shader running over THUG's 2×-wide buffer (16.6 million pixels a
+  pass at 4K). Specialising shaders per combiner setup would cut it.
+- **Overlay.** Dear ImGui (v1.91.9b, submodule `third_party/imgui`), drawn by
+  the renderer over the finished frame (`nv2a_pb_gl_set_overlay`) through
+  epoxy. Events are queued from the main thread. While open the game's pad
+  reads at rest (toolkit `xbox_InputSetBlocked`) and keyboard input stays
+  with the overlay; F1, Esc, or Back+Start and B on a pad. Settings:
+  resolution (native, 2160p to 480p, applied live: every render target is
+  reallocated and its contents scaled across), fullscreen, vsync, frame rate
+  limit, anisotropic filtering, widescreen (next start), original 60 Hz
+  timing (live), FPS counter; live fps, frame time, draws, triangles and a
+  frame-time graph. `src/ui/settings.c` keeps them in
+  `~/.config/thug-pc-port/settings.ini`; a `THUG_*` variable overrides a line
+  for one run.
+
+### 2026-11-10: black cutscene props, decal flicker
+
+- **Owner report:** runs well; textures missing in cutscenes (Chad Muska's car,
+  the dresser in the player's room, the flyer Eric holds in the story intro);
+  some flicker here and there.
+- **Black props.** `RECOMP_GL_PROBE_TEX` found the flyer's draw and
+  `THUG_GL_TEXDUMP` showed its texture decodes correctly; the vertex colour
+  was `0x80000000`. `RECOMP_TRACE_TEX0` showed fixed-function lighting with
+  colour material `0x14` and the global ambient in `MATERIAL_EMISSION`, a
+  term the toolkit's lighting never applied (toolkit fix, see NOTES). The
+  flyer and the dresser now render; the car uses the same path.
+- **Flicker.** Neither the executor nor the renderer handled polygon offset,
+  and THUG uses it on about 100 draws a frame (decals: graffiti, markings).
+  Now passed through and applied (bias in the zeta format's units, slope term
+  scaled by the internal resolution). Not confirmed by the owner yet. The
+  presented surface never changes between frames (`THUG_GL_STATS` counts it),
+  so a wrong-surface flash is ruled out.
+- **Culling** looked at and left off: see NOTES ("Culling").
+
+### 2026-11-10: GPU renderer, widescreen, unlocked frame rate
+
+- **Renderer.** `src/gpu/nv2a_pb_gl.c` started as the otogi1 fork's OpenGL back
+  end and is reworked for THUG. Each change is marked `[thug]`.
+  - One target per colour surface, sized to the furthest clip drawn into it,
+    with the clip as a scissor (the fork made a target per clip, splitting
+    THUG's letterboxed and full-frame passes on the same buffer).
+  - A texture whose address is a render target binds that target's GL
+    texture, so render-to-texture needs no readback.
+  - Linear textures are addressed in texels, swizzled and DXT ones
+    normalised; the shader scales per stage.
+  - The flipped surface is blitted straight to the renderer's own window,
+    aspect-fitted, and nothing is read back unless asked
+    (`THUG_GL_READBACK=1`, or `RECOMP_FB_DUMP*`).
+  - Internal resolution: every surface renders at `THUG_RES_SCALE` (default
+    desktop height / 480); widescreen scales x by a further 4/3, so 1080p
+    renders the 640×480 front buffer at 1920×1080.
+  - Texture cache: 4096 entries, hashed lookup, LRU. The content hash covers
+    the bytes the format occupies (the stale pitch register made it hash 80×
+    too much and re-upload on unrelated writes), sampled above 32 KB. Decode
+    failures are cached. Mipmaps are generated for swizzled/DXT textures, with
+    trilinear plus 16× anisotropic filtering where the title asks for mip
+    filtering.
+  - P8 textures decode through their palette (toolkit fix): fonts and menu
+    art were solid blocks without it.
+  - Clears write what `CLEAR_SURFACE` names, whatever the draw's write masks.
+    THUG clears with depth writes off, so before this every 3D draw failed
+    the depth test.
+  - Vertex data streams through a 64 MB ring (unsynchronised maps), and the
+    combiner uniforms, render state and target binding are only re-sent when
+    they change.
+- **Window.** `src/host/host_window.c` runs the guest on a pthread and pumps
+  SDL events on the main thread. The executor's thread swaps the window
+  (vsync, adaptive if available). F11 or Alt+Enter toggles fullscreen. The
+  title shows the output resolution and FPS. `RECOMP_HEADLESS=1` keeps it
+  hidden; `THUG_GL_DUMP=<dir>` writes frames as PPM.
+- **Frame timing.** THUG's game time is vblanks per swap, at least one
+  (`sub_00173F80`, see `docs/NOTES.md`), so above 60 fps the game ran fast.
+  The override uses host time instead. Checked in a level: `[0x35F030]` read
+  0.91, 1.25 and 1.01 vblanks at the measured 48–66 fps.
+- **Widescreen.** On by default. The AV pack query now carries the
+  dashboard's video flags (toolkit fix), and THUG then creates a widescreen
+  device and renders Hor+ with a 16:9 HUD.
+- **Executor.** A post-transform vertex cache (toolkit) roughly halved the
+  vertex-program work in levels.
+- **Measured** (RTX 4080, headless, 2× scale): menus 60–160 fps; free skate,
+  New Jersey, 75–100 fps in ordinary views and 47–60 in the heaviest (about
+  1,900 draws, 54K triangles a frame), up from about 9. The executor thread
+  is the limit: the vertex-program interpreter and per-draw GL submission.
+- **Not done:** shadows (depth textures, format `0x2E`); a black quad in the
+  intro cutscene; face culling stays off (`RECOMP_GL_NO_CULL=1`).
+- **Next:** owner playtest (windowed path, input feel, any artifacts left);
+  move vertex programs to the GPU or run them across threads; shadows.
+
+### 2026-11-10: in a level (free skate, New Jersey)
+
+- **Owner report:** the menus navigate, at about 8 to 10 fps and with laggy
+  input. Free skate froze on the level loading screen.
+- **Reproduced headless:** I drove the menus through `RECOMP_PAD_LIVE` and
+  watched the frame dumps. The freeze was `sub_000B3D20` (texture level copy)
+  with a corrupt loop bound.
+- **gdb tracer** (breakpoints on the copy, `GetLevelDesc` and `LockRect`):
+  copy #11 had a null source texture. The log showed `[CONTIG] arena
+  exhausted` 100+ times with `allocs=2027 frees=0`. Contiguous memory is
+  never freed without `RECOMP_HEAP_RECLAIM`, so the create failed and the
+  title called `exit()`. `KeBugCheck` returned, and the stack was 4 bytes
+  off.
+- **Fixes:**
+  - `RECOMP_HEAP_RECLAIM=1` is now a default (408 frees by level load, no
+    exhaustion).
+  - `KeBugCheck` now ends the process (toolkit patch), so a future fatal
+    error exits with a message instead of freezing.
+- **Result:** free skate, New Jersey loads and runs: HUD, skater, level.
+- **Performance:** about 9 fps in the menus and in-game. A profile (`top -H`
+  plus gdb samples) shows the game thread waiting in D3D for push-buffer
+  space, the NV2A executor thread at about 88%, and about 15 software
+  rasteriser workers at 50 to 65%. The game is **GPU-bound on the software
+  rasteriser**. Input latency follows from the low frame rate (input is read
+  once a frame).
+- **Next:** a GPU render back end. Otogi's fork (`sigods/xboxrecomp`, branch
+  `otogi1-linux-v0.1`, MIT) has `src/nv2a/nv2a_pb_gl.c`, an OpenGL 3.3 back
+  end for this executor that runs the register combiners in GLSL. It plugs
+  in through `nv2a_backend.h`.
+
+### 2026-11-10: main-menu freeze and dead pad: colour draws at physical 0
+
+- **Owner run:** skipped the intro, then the main menu froze and the pad
+  stopped responding. It wasn't a crash: the game kept drawing at about
+  8 flips/s, and it never loaded past `skaterparts.prx`.
+- **Cause:** the DirectSound free list ended in a node that pointed into
+  zeroed memory, so the allocator looped forever.
+  - `RECOMP_WATCH` showed the node was valid when written, then later
+    overwritten by an unattributed bulk write.
+  - A **gdb hardware watchpoint** caught the writer: `put_pixel` on the NV2A
+    executor thread.
+  - `RECOMP_PB_SURFACES` showed THUG drawing with colour enabled into a
+    surface at colour offset 0, which resolves to `0x80000000` and up.
+  - That range covers DirectSound's first contiguous blocks and page 0, XPP's
+    private USB arena.
+- **Fix:** toolkit patch. A colour surface at physical 0 means no colour
+  surface; depth and stencil are still written. RAMHT and DMA-object base
+  resolution were also added, but THUG's objects are based at 0.
+- **Result:** 6 of 6 runs since the fix (headless and windowed, synthetic
+  Start presses) reach the pre-made skater-select screen. Before it, about 3
+  in 10 froze at the main menu at about 256 flips.
+- **New blocker at skater select (about 560 flips):** the texture
+  level-copy loop `sub_000B3D20` runs away. See NOTES, "Texture level copy".
 
 ### 2026-11-10: menu load, skater select, DirectSound heap
 
