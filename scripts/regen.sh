@@ -13,7 +13,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLKIT="${XBOXRECOMP_DIR:-$ROOT/third_party/xboxrecomp}"
+TOOLKIT="${XBOXRECOMP_DIR:-$ROOT/vendor/xboxrecomp}"
 XBE="$ROOT/game/default.xbe"
 ANALYSIS="$ROOT/game/default_analysis.json"
 GEN_DIR="$ROOT/src/recomp/gen"

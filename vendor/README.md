@@ -26,7 +26,7 @@ against the base commit:
 ```
 git clone https://github.com/sp00nznet/xboxrecomp.git /tmp/xboxrecomp
 git -C /tmp/xboxrecomp checkout 343b6d8901723b37ce568b2418c5df4e1fe1d223
-diff -ruN -x .git -x __pycache__ -x output /tmp/xboxrecomp third_party/xboxrecomp
+diff -ruN -x .git -x __pycache__ -x output /tmp/xboxrecomp vendor/xboxrecomp
 ```
 
 To move to a newer upstream release, apply that diff to the new release

@@ -24,7 +24,7 @@
  *                   executable, or in the tree above it; src/host/launch.h)
  *   THUG_LOG        log file, or "-" for stderr as it is (src/host/launch.h)
  *   RECOMP_*        toolkit switches; see
- *                   third_party/xboxrecomp/docs/runtime/environment-variables.md
+ *                   vendor/xboxrecomp/docs/runtime/environment-variables.md
  */
 
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)

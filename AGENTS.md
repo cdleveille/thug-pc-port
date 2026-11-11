@@ -7,7 +7,7 @@ decision log) and `docs/BRINGUP.md` (where bring-up stands).
 
 A native Windows and Linux x86-64 build of *Tony Hawk's Underground* (Xbox,
 NTSC-U, 2003), made by **static recompilation**: the game's own x86 is
-translated to C by the [xboxrecomp](third_party/xboxrecomp) toolkit and
+translated to C by the [xboxrecomp](vendor/xboxrecomp) toolkit and
 compiled natively. There is no emulation and no interpreter.
 
 Goals, in order:
@@ -31,15 +31,15 @@ shows something, the game's own code put it there.
    - `src/recomp_manual.c`: hand-written replacements for single lifted
      functions. Replace, don't wrap. Log each one in `docs/OVERRIDES.md`
      with the guest address, the symptom and the reason.
-   - `third_party/xboxrecomp`: general bugs in the lifter, kernel shim or
+   - `vendor/xboxrecomp`: general bugs in the lifter, kernel shim or
      graphics translation. The toolkit is vendored: committed here as
-     ordinary files, based on upstream v0.17.0 (`third_party/README.md`).
+     ordinary files, based on upstream v0.17.0 (`vendor/README.md`).
      After changing it:
      1. List the change in `docs/NOTES.md` ("Toolkit changes").
      2. Add or extend a test under the toolkit's `tests/`.
-     3. Offer general fixes upstream. `third_party/README.md` shows how to
+     3. Offer general fixes upstream. `vendor/README.md` shows how to
         diff against the upstream base.
-     Never commit the pipeline's output under `third_party/xboxrecomp/tools/*/output/`:
+     Never commit the pipeline's output under `vendor/xboxrecomp/tools/*/output/`:
      it is derived from the game (the toolkit's `.gitignore` excludes it).
 4. **Addresses are for one binary.** `default.xbe` SHA-1
    `2951de954c96a8b962ba1cde34548fa82ae668d7` (USA retail). Anything keyed
@@ -61,8 +61,8 @@ shows something, the game's own code put it there.
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
 | `docs/` | Title notes, bring-up log, override log |
-| `third_party/xboxrecomp` | The toolkit (vendored, with this port's changes) |
-| `third_party/imgui` | Dear ImGui for the F1 overlay (vendored, the files the build uses) |
+| `vendor/xboxrecomp` | The toolkit (vendored, with this port's changes) |
+| `vendor/imgui` | Dear ImGui for the F1 overlay (vendored, the files the build uses) |
 | `game/` | The user's disc image and the files unpacked from it (gitignored) |
 
 ## Workflow
@@ -156,7 +156,7 @@ starts with the F1 overlay open (for screenshots). The player's settings live
 in `~/.config/thug-pc-port/settings.ini` and are loaded by every run, so a
 test that depends on one should set its `THUG_*` variable explicitly. A headless run that needs menu input:
 `RECOMP_PAD_LIVE=<file>`, with one button per appended line. The toolkit's own guides are authoritative:
-`third_party/xboxrecomp/docs/INDEX.md`, especially its "By Symptom" table,
+`vendor/xboxrecomp/docs/INDEX.md`, especially its "By Symptom" table,
 `docs/pipeline/06-debugging.md` and
 `docs/runtime/environment-variables.md` (every `RECOMP_*` switch).
 

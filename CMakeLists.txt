@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 # NTSC-U, 2003) by static recompilation.
 #
 # The game's x86 code is lifted to C by the xboxrecomp toolkit
-# (third_party/xboxrecomp). scripts/regen.sh writes the generated C into
+# (vendor/xboxrecomp). scripts/regen.sh writes the generated C into
 # src/recomp/gen/, and this file compiles it together with the toolkit's
 # runtime libraries into one native executable.
 # ============================================================================
@@ -19,13 +19,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 
-set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xboxrecomp" CACHE PATH
-    "Path to the xboxrecomp toolkit root (vendored in third_party/ by default)")
+set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/xboxrecomp" CACHE PATH
+    "Path to the xboxrecomp toolkit root (vendor/xboxrecomp by default)")
 
 if(NOT EXISTS "${XBOXRECOMP_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "xboxrecomp not found at ${XBOXRECOMP_DIR}. It is part of this "
-        "repository (third_party/xboxrecomp); is the checkout complete?")
+        "repository (vendor/xboxrecomp); is the checkout complete?")
 endif()
 
 # Builds the runtime libraries and provides the 'xboxrecomp' umbrella target.
@@ -87,7 +87,7 @@ if(NOT WIN32)
 
     # The in-game settings overlay (F1): Dear ImGui (vendored), drawn
     # by the GPU renderer through epoxy.
-    set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+    set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui")
     if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
         message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. It is part "
                             "of this repository; is the checkout complete?")

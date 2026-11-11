@@ -3,7 +3,7 @@
  * game_data.h.
  *
  * The disc reader follows the toolkit's tools/xiso/xdvdfs.py (format notes in
- * third_party/xboxrecomp/docs/formats/disc-image.md): probe the XDVDFS
+ * vendor/xboxrecomp/docs/formats/disc-image.md): probe the XDVDFS
  * descriptor at each known game-partition base, then read directories as
  * runs of fixed-layout entries, sector by sector, rather than following the
  * binary-tree links (a bad link would silently drop a subtree).

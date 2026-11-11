@@ -36,10 +36,10 @@ the next step. Record failures here as well as successes.
 - **Owner request:** commit the third-party code instead of using
   submodules; make the `thug` executable all a player runs, unpacking and
   checking the disc image itself (the image now lives in `game/`).
-- **Vendored** `third_party/xboxrecomp` (with this port's changes in place;
+- **Vendored** `vendor/xboxrecomp` (with this port's changes in place;
   the patch workflow is gone) and the parts of Dear ImGui the build uses.
   The toolkit's 679 tracked files match its own list exactly; its
-  per-game pipeline output stays ignored. See `third_party/README.md`.
+  per-game pipeline output stays ignored. See `vendor/README.md`.
 - **Start-up** (`src/host/launch.c`, `src/host/game_data.c`):
   - `game/` is found next to the executable or in the tree above it, so
     `build/bin/thug` works from any directory.
@@ -203,7 +203,7 @@ the next step. Record failures here as well as successes.
   the GPU work is a real cost, most likely the generic register-combiner
   fragment shader running over THUG's 2×-wide buffer (16.6 million pixels a
   pass at 4K). Specialising shaders per combiner setup would cut it.
-- **Overlay.** Dear ImGui (v1.91.9b, `third_party/imgui`), drawn by
+- **Overlay.** Dear ImGui (v1.91.9b, `vendor/imgui`), drawn by
   the renderer over the finished frame (`nv2a_pb_gl_set_overlay`) through
   epoxy. Events are queued from the main thread. While open the game's pad
   reads at rest (toolkit `xbox_InputSetBlocked`) and keyboard input stays

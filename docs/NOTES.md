@@ -57,12 +57,13 @@ Facts about the binary and the decisions made around it. Keep this current.
   - GameCube was rejected because it's big-endian PowerPC and has no
     comparable runtime.
 - **2026-11-10: Toolkit pinned at xboxrecomp v0.17.0** (`343b6d8`), as a
-  submodule at `third_party/xboxrecomp`, with the local patches below.
+  git submodule with the local patches below (now vendored, see next).
 - **2026-11-11: Toolkit and Dear ImGui vendored.** Both submodules became
-  ordinary files in this repository (owner's call: one repository, a plain
-  clone builds). The toolkit carries this port's changes in place, so
+  ordinary files in this repository, under `vendor/` (owner's call: one
+  repository, a plain clone builds; the folder was `third_party/` until the
+  owner renamed it the same day). The toolkit carries this port's changes in place, so
   `patches/xboxrecomp/` and `scripts/apply-patches.sh` are gone; ImGui keeps
-  only the files the build compiles. Upstream bases: `third_party/README.md`.
+  only the files the build compiles. Upstream bases: `vendor/README.md`.
 - **2026-11-11: The executable prepares its own game files** (owner's call:
   running `thug` should be all a player does). The disc image lives in
   `game/` (`rom/` is gone); on first launch the game unpacks it with its own
@@ -79,7 +80,7 @@ Facts about the binary and the decisions made around it. Keep this current.
 ## Toolkit changes
 
 These are general fixes, not THUG-specific ones, made in place in the
-vendored `third_party/xboxrecomp` (upstream base: `third_party/README.md`).
+vendored `vendor/xboxrecomp` (upstream base: `vendor/README.md`).
 They should go upstream. The first column is where a change was first
 carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`.
 
