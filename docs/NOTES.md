@@ -58,15 +58,30 @@ Facts about the binary and the decisions made around it. Keep this current.
     comparable runtime.
 - **2026-11-10: Toolkit pinned at xboxrecomp v0.17.0** (`343b6d8`), as a
   submodule at `third_party/xboxrecomp`, with the local patches below.
+- **2026-11-11: Toolkit and Dear ImGui vendored.** Both submodules became
+  ordinary files in this repository (owner's call: one repository, a plain
+  clone builds). The toolkit carries this port's changes in place, so
+  `patches/xboxrecomp/` and `scripts/apply-patches.sh` are gone; ImGui keeps
+  only the files the build compiles. Upstream bases: `third_party/README.md`.
+- **2026-11-11: The executable prepares its own game files** (owner's call:
+  running `thug` should be all a player does). The disc image lives in
+  `game/` (`rom/` is gone); on first launch the game unpacks it with its own
+  XDVDFS reader (`src/host/game_data.c`, after the toolkit's
+  `tools/xiso/xdvdfs.py`), checks `default.xbe`'s SHA-1 every launch, and
+  refuses missing files or another version with a message box.
+  `scripts/extract.sh` and `scripts/play.sh` are gone; the build uses
+  `build/bin/thug-extract`, the same code as a command. The log goes to
+  `~/.local/state/thug-pc-port/thug.log` unless stderr is redirected.
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.
 
-## Toolkit patches
+## Toolkit changes
 
-These are general fixes, not THUG-specific ones. They are kept in
-`patches/xboxrecomp/` and applied by `scripts/apply-patches.sh`. They should
-go upstream.
+These are general fixes, not THUG-specific ones, made in place in the
+vendored `third_party/xboxrecomp` (upstream base: `third_party/README.md`).
+They should go upstream. The first column is where a change was first
+carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`.
 
 | Patch | Fix | Found by |
 |---|---|---|

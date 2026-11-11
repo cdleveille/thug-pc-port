@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.20)
+project(apu_volume_test C)
+set(CMAKE_C_STANDARD 11)
+add_subdirectory(../.. runtime)
+add_executable(apu_volume_test test_main.c)
+target_include_directories(apu_volume_test PRIVATE ../../src ../../src/apu)
+# apu_core.c, where the master volume lives, needs the whole runtime.
+target_link_libraries(apu_volume_test PRIVATE xboxrecomp)
+enable_testing()
+add_test(NAME apu_volume COMMAND apu_volume_test)

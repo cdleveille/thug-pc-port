@@ -31,6 +31,34 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-11: one repository, one executable
+
+- **Owner request:** commit the third-party code instead of using
+  submodules; make the `thug` executable all a player runs, unpacking and
+  checking the disc image itself (the image now lives in `game/`).
+- **Vendored** `third_party/xboxrecomp` (with this port's changes in place;
+  the patch workflow is gone) and the parts of Dear ImGui the build uses.
+  The toolkit's 679 tracked files match its own list exactly; its
+  per-game pipeline output stays ignored. See `third_party/README.md`.
+- **Start-up** (`src/host/launch.c`, `src/host/game_data.c`):
+  - `game/` is found next to the executable or in the tree above it, so
+    `build/bin/thug` works from any directory.
+  - Disc image only: unpacked on first launch (5,797 files, 3.4 GB; the
+    Redump image's game partition at 0x18300000), with a progress window and
+    a free-space check, then `default.xbe` verified. Byte-for-byte the same
+    as the old Python extraction; about 2 s from a warm cache.
+  - `default.xbe` written last, so an interrupted unpack is redone; a
+    corrupted or other-version `default.xbe` is replaced from the image, or
+    refused without one.
+  - Nothing there: a message box (and the terminal) says what to put where.
+  - The log goes to `~/.local/state/thug-pc-port/thug.log` unless stderr is
+    redirected; a crash points the terminal at it.
+- `scripts/build.sh` builds and runs `thug-extract` (the same code as a
+  command) before lifting. `extract.sh`, `play.sh` and `apply-patches.sh`
+  are gone.
+- **Not done:** the Windows side compiles in principle (message box, no
+  progress window) but is untested; Windows builds are not set up.
+
 ### 2026-11-10: antialiasing, more overlay settings
 
 - **Owner request:** antialiasing (2x, 4x, 8x) in the overlay, plus any other
@@ -175,7 +203,7 @@ the next step. Record failures here as well as successes.
   the GPU work is a real cost, most likely the generic register-combiner
   fragment shader running over THUG's 2×-wide buffer (16.6 million pixels a
   pass at 4K). Specialising shaders per combiner setup would cut it.
-- **Overlay.** Dear ImGui (v1.91.9b, submodule `third_party/imgui`), drawn by
+- **Overlay.** Dear ImGui (v1.91.9b, `third_party/imgui`), drawn by
   the renderer over the finished frame (`nv2a_pb_gl_set_overlay`) through
   epoxy. Events are queued from the main thread. While open the game's pad
   reads at rest (toolkit `xbox_InputSetBlocked`) and keyboard input stays

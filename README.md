@@ -11,12 +11,32 @@ renderer draws it at your display's resolution, in widescreen, with the frame
 rate unlocked. See [docs/BRINGUP.md](docs/BRINGUP.md) for what works and
 what doesn't.
 
-To build and play:
+To build and play, put your disc image in `game/`, then:
 
 ```
 scripts/build.sh     # rebuild whatever is out of date
-scripts/play.sh      # play; the log goes to stderr.txt
+build/bin/thug       # play
 ```
+
+## Running the game
+
+Run `thug`. It looks for its files in a `game/` folder next to it (or in the
+tree above it, so `build/bin/thug` finds the repository's `game/`):
+
+- **Only the disc image** (`game/*.iso`, a Redump dump or a trimmed XISO): on
+  first launch the game unpacks it into `game/` (about 3.4 GB, with a
+  progress window), checks that `default.xbe` is the supported USA build, and
+  starts. The image can stay or go afterwards.
+- **The unpacked files** (`game/default.xbe` and `game/data/`, with or
+  without the image): `default.xbe` is checked and the game starts.
+- **Neither**, or another version of the game: it says so and exits.
+
+An interrupted unpack is noticed and done again (`default.xbe` is written
+last). `THUG_GAME_DIR=<dir>` points the game somewhere else.
+
+The game's log goes to `~/.local/state/thug-pc-port/thug.log` (the previous
+run's is `thug.prev.log`) unless you redirect stderr yourself;
+`THUG_LOG=<file>` picks another file, `THUG_LOG=-` keeps it on stderr.
 
 In game, **F1** (or Back+Start held together on a pad) opens the settings
 overlay:
@@ -32,9 +52,7 @@ Changes apply at once (widescreen at the next start) and are saved to
 open the game gets no input and the pad does not vibrate. In a window, the
 mouse cursor hides after two seconds without moving.
 
-`scripts/play.sh --help` lists its options (`--fullscreen`, `--4x3`,
-`--scale <x>`, `--no-vsync`). They, and the variables below, override the
-saved settings for one run.
+The variables below override the saved settings for one run.
 
 | Key or switch | Effect |
 |---|---|
@@ -59,7 +77,8 @@ Windows builds are planned.
 ## You need
 
 - Your own **Tony Hawk's Underground (USA) Xbox disc image**. This repository
-  contains no game code or data, and no generated code derived from it.
+  contains no game code or data, and no generated code derived from it. The
+  game's files go in `game/`, which git ignores.
   - Supported `default.xbe`: SHA-1 `2951de954c96a8b962ba1cde34548fa82ae668d7`
 - Linux x86-64 with:
   - clang or GCC
@@ -77,26 +96,30 @@ Windows builds are planned.
 ## Build
 
 ```
-git clone --recursive <this repo>
+git clone <this repo>
 cd thug-pc-port
-cp "/path/to/Tony Hawk's Underground (USA).iso" rom/
+cp "/path/to/Tony Hawk's Underground (USA).iso" game/
 scripts/build.sh
-scripts/play.sh
+build/bin/thug
 ```
 
-`scripts/build.sh` runs the steps below as needed: it applies the toolkit
-patches, extracts the disc the first time, lifts `default.xbe` to C (a few
-minutes; again when `src/recomp_manual.c` or the seed functions change, or
-with `--regen`), configures CMake and compiles. By hand:
+Building needs the unpacked `default.xbe` (it is lifted to C), so
+`scripts/build.sh` unpacks the image itself the first time, with
+`build/bin/thug-extract`: the game's own start-up check as a command. Then it
+lifts `default.xbe` to C (a few minutes; again when `src/recomp_manual.c` or
+the seed functions change, or with `--regen`), configures CMake and compiles.
+By hand:
 
 ```
-scripts/apply-patches.sh    # local fixes to the toolkit, pending upstream
-scripts/extract.sh          # unpack the disc into game/ and verify the XBE
-scripts/regen.sh            # lift default.xbe to C in src/recomp/gen/
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --target thug-extract
+build/bin/thug-extract game     # unpack game/*.iso if needed, verify default.xbe
+scripts/regen.sh                # lift default.xbe to C in src/recomp/gen/
 cmake --build build
-build/bin/thug 2> stderr.txt
+build/bin/thug
 ```
+
+`build/bin/thug-extract --list <image>` lists a disc image's files.
 
 ## Credits
 

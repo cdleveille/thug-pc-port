@@ -1,6 +1,5 @@
 # ── Game content: never commit ─────────────────────────────────
 # Disc images and extracted files belong to the user's own copy of the game.
-rom/
 game/
 *.iso
 *.xiso

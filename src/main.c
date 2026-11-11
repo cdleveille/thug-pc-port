@@ -19,7 +19,10 @@
  *   Kernel:       135 imports
  *
  * Environment:
- *   THUG_GAME_DIR   directory holding default.xbe and data/ (default "game")
+ *   THUG_GAME_DIR   directory holding default.xbe and data/, or the disc
+ *                   image to unpack there (default: game/ next to the
+ *                   executable, or in the tree above it; src/host/launch.h)
+ *   THUG_LOG        log file, or "-" for stderr as it is (src/host/launch.h)
  *   RECOMP_*        toolkit switches; see
  *                   third_party/xboxrecomp/docs/runtime/environment-variables.md
  */
@@ -51,6 +54,7 @@
 
 #include "gpu/nv2a_pb_gl.h"
 #include "host/host_window.h"
+#include "host/launch.h"
 #include "ui/settings.h"
 
 /* ── Guest register file (defined thread-local in xbox_memory_layout.c) ──
@@ -93,8 +97,6 @@ void nv2a_pb_semaphore_from_fence_word(int on);
 
 #define THUG_ENTRY_POINT     0x00177858u
 #define THUG_D3D_DEVICE_PTR  0x0019C358u   /* XDK D3D's global device pointer */
-#define THUG_DEFAULT_DIR     "game"
-
 static char g_game_dir[1024];
 static char g_xbe_path[1100];
 
@@ -216,6 +218,7 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *ucv)
     fprintf(stderr, "  host backtrace:\n");
     n = backtrace(frames, 48);
     backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    thug_launch_crash_notice();
 
     /* Die with the original signal so a debugger or core dump sees it. */
     signal(sig, SIG_DFL);
@@ -333,9 +336,7 @@ static int thug_guest_main(void)
 
     fprintf(stderr, "[thug] loading %s\n", g_xbe_path);
     if (!load_xbe(g_xbe_path, &xbe_data, &xbe_size)) {
-        fprintf(stderr, "[thug] failed to load %s. Extract the disc into %s/ "
-                        "(scripts/extract.sh) or set THUG_GAME_DIR.\n",
-                g_xbe_path, g_game_dir);
+        fprintf(stderr, "[thug] failed to load %s\n", g_xbe_path);
         return 1;
     }
     fprintf(stderr, "[thug] XBE loaded: %zu bytes\n", xbe_size);
@@ -407,8 +408,6 @@ static int thug_guest_main(void)
 
 int main(int argc, char **argv)
 {
-    const char *dir = getenv("THUG_GAME_DIR");
-
     (void)argc;
     (void)argv;
 
@@ -416,11 +415,29 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
+    /* The log goes to a file unless the caller redirected stderr. */
+    thug_launch_log_setup();
+
+#if !defined(_WIN32)
+    /* The GL driver's own worker thread (see nv2a_pb_gl_init), asked for
+     * before anything can load the driver: the first-launch progress window
+     * may, through SDL. */
+    if (!getenv("THUG_GL_NO_DRIVER_THREAD")) {
+        setenv("__GL_THREADED_OPTIMIZATIONS", "1", 0);
+        setenv("mesa_glthread", "true", 0);
+    }
+#endif
+
     /* The player's saved settings (F1 overlay), exported as the THUG_*
      * variables the rest of start-up reads; a variable already set wins. */
     thug_settings_load();
     thug_set_default_env();
     thug_settings_apply_audio_input();   /* master volume, vibration strength */
+
+    /* The game's files: found, or unpacked from the disc image and checked;
+     * otherwise the player is told what is missing. */
+    if (!thug_launch_prepare(g_game_dir, sizeof g_game_dir))
+        return 1;
 
 #if defined(__linux__)
     /* THUG_DEBUG_ATTACH: let any debugger attach (Yama ptrace_scope 1 allows
@@ -432,8 +449,6 @@ int main(int argc, char **argv)
         prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
 #endif
 
-    snprintf(g_game_dir, sizeof(g_game_dir), "%s",
-             (dir && *dir) ? dir : THUG_DEFAULT_DIR);
     snprintf(g_xbe_path, sizeof(g_xbe_path), "%s/default.xbe", g_game_dir);
 
     install_fault_handler();

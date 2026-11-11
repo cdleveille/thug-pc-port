@@ -33,7 +33,7 @@ should_run() {
 }
 
 if [[ ! -f "$XBE" ]]; then
-  echo "error: $XBE not found. Run scripts/extract.sh first." >&2
+  echo "error: $XBE not found. Put your disc image in game/ and run scripts/build.sh." >&2
   exit 1
 fi
 if ! python3 -c 'import capstone' 2>/dev/null; then

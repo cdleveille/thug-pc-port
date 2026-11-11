@@ -20,18 +20,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xboxrecomp" CACHE PATH
-    "Path to the xboxrecomp toolkit root (git submodule by default)")
+    "Path to the xboxrecomp toolkit root (vendored in third_party/ by default)")
 
 if(NOT EXISTS "${XBOXRECOMP_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-        "xboxrecomp not found at ${XBOXRECOMP_DIR}. "
-        "Run: git submodule update --init --recursive")
+        "xboxrecomp not found at ${XBOXRECOMP_DIR}. It is part of this "
+        "repository (third_party/xboxrecomp); is the checkout complete?")
 endif()
 
 # Builds the runtime libraries and provides the 'xboxrecomp' umbrella target.
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 # ── Recompiled game executable ──────────────────────────────────
+
+# ── Game files: the start-up check and disc unpacking ─────────
+
+# The same code the game runs at start-up (src/host/game_data.c), as a
+# command: lifting needs game/default.xbe before the game itself can be
+# built, so scripts/build.sh builds and runs this first.
+add_executable(thug-extract src/tools/thug_extract.c src/host/game_data.c)
+target_include_directories(thug-extract PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set_target_properties(thug-extract PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # Empty until scripts/regen.sh has run. CONFIGURE_DEPENDS re-globs when the
 # pipeline adds or removes chunks, so a regen never leaves a file out.
@@ -48,7 +58,9 @@ add_executable(thug
     src/main.c
     src/recomp_manual.c
     src/gpu/nv2a_pb_gl.c
+    src/host/game_data.c
     src/host/host_window.c
+    src/host/launch.c
     src/ui/settings.c
     ${THUG_GEN_SOURCES}
 )
@@ -73,12 +85,12 @@ if(NOT WIN32)
     target_link_libraries(thug PRIVATE SDL2::SDL2 ${THUG_EPOXY_LINK_LIBRARIES})
     target_include_directories(thug PRIVATE ${THUG_EPOXY_INCLUDE_DIRS})
 
-    # The in-game settings overlay (F1): Dear ImGui, a git submodule, drawn
+    # The in-game settings overlay (F1): Dear ImGui (vendored), drawn
     # by the GPU renderer through epoxy.
     set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
     if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
-        message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. "
-                            "Run: git submodule update --init --recursive")
+        message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. It is part "
+                            "of this repository; is the checkout complete?")
     endif()
     target_sources(thug PRIVATE
         src/ui/overlay.cpp

@@ -20,8 +20,9 @@ shows something, the game's own code put it there.
 
 ## Hard rules
 
-1. **Never commit game content.** That covers `rom/`, `game/`, any `.iso`,
-   `.xbe` or `.bik`, and extracted assets. The user supplies their own disc.
+1. **Never commit game content.** That covers `game/` (the user's disc
+   image and the files unpacked from it), any `.iso`, `.xbe` or `.bik`, and
+   extracted assets. The user supplies their own disc.
 2. **Never commit or hand-edit `src/recomp/gen/`.** It is lifted from the
    game's executable (a derivative of the game) and `scripts/regen.sh`
    overwrites it.
@@ -31,13 +32,15 @@ shows something, the game's own code put it there.
      functions. Replace, don't wrap. Log each one in `docs/OVERRIDES.md`
      with the guest address, the symptom and the reason.
    - `third_party/xboxrecomp`: general bugs in the lifter, kernel shim or
-     graphics translation. It is a git submodule, so a change there is
-     invisible to anyone else until it's exported. After changing it:
-     1. Regenerate `patches/xboxrecomp/*.patch`. Check it with
-        `git -C third_party/xboxrecomp apply --check -R <patch>`.
-     2. List the change in `docs/NOTES.md` ("Toolkit patches").
-     3. Add or extend a test under the toolkit's `tests/`.
-     4. Offer general fixes upstream.
+     graphics translation. The toolkit is vendored: committed here as
+     ordinary files, based on upstream v0.17.0 (`third_party/README.md`).
+     After changing it:
+     1. List the change in `docs/NOTES.md` ("Toolkit changes").
+     2. Add or extend a test under the toolkit's `tests/`.
+     3. Offer general fixes upstream. `third_party/README.md` shows how to
+        diff against the upstream base.
+     Never commit the pipeline's output under `third_party/xboxrecomp/tools/*/output/`:
+     it is derived from the game (the toolkit's `.gitignore` excludes it).
 4. **Addresses are for one binary.** `default.xbe` SHA-1
    `2951de954c96a8b962ba1cde34548fa82ae668d7` (USA retail). Anything keyed
    by address is wrong for any other build.
@@ -50,33 +53,40 @@ shows something, the game's own code put it there.
 | Path | What |
 |---|---|
 | `src/main.c` | Host entry: loads the XBE, maps memory, boots the kernel shim, enters the guest. Crash reporter for both platforms. |
+| `src/host/launch.c` | Start-up: the log file, and the game files (found next to the executable, unpacked from the disc image on first launch with a progress window, refused with a message box when absent or the wrong version) |
+| `src/host/game_data.c` | Finding the game directory, the XBE check, the XDVDFS reader and unpacking; no SDL, shared with `thug-extract` |
+| `src/tools/thug_extract.c` | `build/bin/thug-extract`: the same check and unpack as a command, for `scripts/build.sh` (lifting needs `default.xbe` before the game can be built) |
 | `src/recomp_manual.c` | Manual overrides, ICALL failure logging |
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
-| `scripts/extract.sh` | Unpack `rom/*.iso` into `game/` and verify the XBE hash |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
-| `scripts/apply-patches.sh` | Apply `patches/xboxrecomp/*.patch` to the submodule (idempotent) |
-| `patches/xboxrecomp/` | Local toolkit fixes not yet upstream |
 | `docs/` | Title notes, bring-up log, override log |
-| `third_party/xboxrecomp` | The toolkit (submodule) |
-| `rom/`, `game/` | The user's disc image and extracted files (gitignored) |
+| `third_party/xboxrecomp` | The toolkit (vendored, with this port's changes) |
+| `third_party/imgui` | Dear ImGui for the F1 overlay (vendored, the files the build uses) |
+| `game/` | The user's disc image and the files unpacked from it (gitignored) |
 
 ## Workflow
 
 ```
-scripts/apply-patches.sh           # once per checkout: local toolkit fixes
-scripts/extract.sh                 # once: rom/*.iso -> game/
-scripts/regen.sh                   # lift game/default.xbe -> src/recomp/gen/
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --target thug-extract
+build/bin/thug-extract game        # once: game/*.iso -> game/, XBE verified
+scripts/regen.sh                   # lift game/default.xbe -> src/recomp/gen/
 cmake --build build
-build/bin/thug 2> stderr.txt       # run from the repo root; reads game/
+build/bin/thug 2> stderr.txt       # finds game/ from the executable's location
 ```
 
 `scripts/build.sh` does all of the build steps that are out of date (it
 regenerates from the `recomp` stage when `src/recomp_manual.c` is newer than
-`src/recomp/gen/.regen-stamp`), and `scripts/play.sh` runs the game with the
-log in `stderr.txt`. Both are for the owner; scripted test runs still call
-`build/bin/thug` directly.
+`src/recomp/gen/.regen-stamp`). The player just runs `build/bin/thug`.
+
+The log: with stderr redirected to a file or a pipe (every recipe here), the
+game leaves it alone. Otherwise (a terminal, a desktop launcher) it writes
+`~/.local/state/thug-pc-port/thug.log` and prints only the player's messages;
+`THUG_LOG=-` keeps stderr as it is. Before booting, the game checks
+`default.xbe`'s SHA-1 every run, so a test against another folder sets
+`THUG_GAME_DIR`; a folder holding only an image is unpacked into, which is how
+to test first launch (link the image in rather than copying it).
 
 `scripts/regen.sh --from <stage>` resumes from `parse`, `disasm`, `func_id`,
 `abi` or `recomp`. Re-running `disasm` discards any Ghidra names applied to
