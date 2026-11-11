@@ -1,7 +1,9 @@
 # AGENTS.md: THUG PC Port
 
 Read this first, every session. Then read `docs/NOTES.md` (title facts and
-decision log) and `docs/BRINGUP.md` (where bring-up stands).
+decision log) and `docs/BRINGUP.md` (where bring-up stands). On Windows, also
+read `docs/WINDOWS.md`: the handoff for the Windows build, with the plan and
+the owner's context.
 
 ## What this project is
 
@@ -65,7 +67,7 @@ shows something, the game's own code put it there.
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
-| `docs/` | Title notes, bring-up log, override log |
+| `docs/` | Title notes, bring-up log, override log, Windows handoff (`WINDOWS.md`) |
 | `vendor/xboxrecomp` | The toolkit (vendored, with this port's changes) |
 | `vendor/imgui` | Dear ImGui for the F1 overlay (vendored, the files the build uses) |
 | `game/` | The user's disc image and the files unpacked from it (gitignored) |
@@ -201,12 +203,16 @@ must not touch the player's files points `XDG_CONFIG_HOME` and
 
 ## Environment
 
-- Linux x86-64 is the primary development host: clang or GCC, CMake 3.20+,
-  Ninja, SDL2, libepoxy, Python 3.10+ with `capstone`.
-- Windows builds use the toolkit's D3D11 backend (MSVC 2022 or MinGW-w64).
-  They are not set up yet.
-- The toolkit's OpenGL path is less complete than its D3D11 path. A rendering
-  bug on Linux may be a toolkit gap rather than a title bug.
+- Linux x86-64 has been the development host so far: clang or GCC, CMake
+  3.20+, Ninja, SDL2, libepoxy, Python 3.10+ with `capstone`.
+- Windows 11 is next (2026-11-11), and nothing has been built there yet. The
+  plan is the same SDL2 + OpenGL renderer under MinGW-w64 (MSYS2 CLANG64),
+  not the toolkit's D3D11 backend: THUG renders through the pushbuffer
+  executor, not the D3D8 calls that backend intercepts. See
+  `docs/WINDOWS.md`.
+- The toolkit's D3D8 translation (`vendor/xboxrecomp/src/d3d`, D3D11 on
+  Windows, OpenGL elsewhere) is not THUG's path. A rendering bug is in the
+  executor (`nv2a_pb_exec.c`) or the port's renderer (`src/gpu/nv2a_pb_gl.c`).
 
 ## Title-specific knowledge
 

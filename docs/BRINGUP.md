@@ -31,6 +31,28 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-11: handoff to Windows
+
+- The owner moves to Windows 11 to bring up a Windows build; the next
+  session starts there, without this machine's context.
+- `docs/WINDOWS.md` has the plan: the same SDL2 + OpenGL renderer under
+  MinGW-w64 (MSYS2 CLANG64), a file-by-file list of what is Linux-only today,
+  the order of work, and an owner test checklist. It also has the owner's
+  context.
+- The state at handoff:
+  - The game builds, and the port's test (`ctest --test-dir build`) passes.
+  - Every toolkit suite under `vendor/xboxrecomp/tests` was configured,
+    built and run on Linux, each in a fresh folder. 71 pass.
+  - 13 suites are Windows-only (they stop at configure or need
+    `windows.h`), or register no tests on Linux (`cmake_d3d8_consumer`,
+    `d3d8_smoke`). `audio_mixer` has no `CMakeLists.txt`.
+  - One fails: `kernel_open_directory` ("non-directory open of a directory
+    succeeded"). It fails at the last commit too, so it predates the day's
+    work. THUG plays regardless; not investigated.
+- The day's work (glass shards, rumble, smooth text) is in commit `afb2cec`;
+  this entry, `docs/WINDOWS.md` and the pointers to it in AGENTS.md and the
+  README came after it.
+
 ### 2026-11-11: smooth text and icons (xBR)
 
 - Owner report: on-screen text is readable but looks low-res, with noisy,

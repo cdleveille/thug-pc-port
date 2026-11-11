@@ -93,7 +93,8 @@ The variables below override the saved settings for one run.
 | `THUG_VBLANK_TIMING=1` | The original 60 Hz game timing (runs fast above 60 fps) |
 | `RECOMP_PB_GL=0` | The old CPU renderer (slow) |
 
-Windows builds are planned.
+A Windows build is next: the plan and its state are in
+[docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## You need
 
