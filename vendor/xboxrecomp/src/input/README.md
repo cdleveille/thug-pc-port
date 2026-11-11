@@ -50,7 +50,9 @@ void xbox_InputInit(void);
 // Poll controller state (returns 0 on success, non-zero if disconnected)
 DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState);
 
-// Set vibration motors
+// Set vibration motors. As on the Xbox, they keep these speeds until the
+// next call: no need to send them again every frame (on SDL the speeds are
+// held, and re-armed from the input poll, past SDL's per-request duration).
 DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration);
 
 // Check if controller is connected

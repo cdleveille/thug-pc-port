@@ -656,6 +656,22 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
         }
     }
     {
+        bool up = nv2a_pb_gl_ui_upscale() != 0;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Smooth text and icons");
+        help_marker("The game's text, icons and logos are drawn for a 640x480 TV, "
+                    "so enlarged they look soft and stair-stepped. On, they are "
+                    "enlarged with xBR, an upscaler made for low-resolution game "
+                    "art, which draws their outlines as smooth curves. It smooths "
+                    "edges rather than adding detail; the difference grows with "
+                    "the resolution.");
+        ImGui::SameLine(label_w);
+        if (ImGui::Checkbox("##uiup", &up)) {
+            S.ui_upscale = up;
+            nv2a_pb_gl_set_ui_upscale(up);
+        }
+    }
+    {
         int pct = (int)floorf(S.brightness * 100.0f + 0.5f);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Brightness");
@@ -789,6 +805,7 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
             nv2a_pb_gl_set_fps_limit(S.fps_limit);
             nv2a_pb_gl_set_aniso(S.aniso);
             nv2a_pb_gl_set_msaa(S.msaa);
+            nv2a_pb_gl_set_ui_upscale(S.ui_upscale);
             nv2a_pb_gl_set_brightness(S.brightness);
             nv2a_pb_gl_set_aspect(S.aspect);
             thug_settings_apply_audio_input();

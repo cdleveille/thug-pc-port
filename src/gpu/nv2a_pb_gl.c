@@ -53,6 +53,9 @@ int nv2a_pb_gl_init(void)
 
 #include <SDL.h>
 #include <epoxy/gl.h>
+#include <pthread.h>
+
+#include "xbr.h"                       /* [thug] smooth text and icons */
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 
@@ -1048,6 +1051,11 @@ typedef struct {
     uint32_t hash_frame;  /* frame + 1 whose bytes `live` describes (0 = never) */
     uint64_t live;        /* hash sampled this frame */
     uint32_t upload_frame;/* frame + 1 of the last upload (streamed sources) */
+    /* [thug] Smooth text and icons (up_request): the xBR factor the GL
+     * texture holds (0 = the game's own size), whether the content was found
+     * not to be text or icon art, and the worker slot + 1 of a pending job. */
+    int8_t   up, up_no;
+    int16_t  up_slot;
 } GlTex;
 
 /* [thug] 4096 entries behind a hash on the identity. A level binds well
@@ -1135,6 +1143,125 @@ static GlTex *tex_find(const Nv2aTexture *t)
     return NULL;
 }
 
+/* [thug] ── Smooth text and icons ──────────────────────────────────────────
+ *
+ * The game's text, icons and logos are 640x480-era bitmaps (an 11-pixel font
+ * in a 256x256 atlas), and at 1080p or 4K bilinear magnification draws their
+ * outlines as soft staircases. With the setting on (THUG_UI_UPSCALE, the
+ * overlay's "Smooth text and icons"), such a texture is magnified 2x or 4x
+ * with xBR (xbr.c), which follows an edge and draws it smooth, and the
+ * renderer samples that instead, trilinear, at the same coordinates.
+ *
+ * Which textures: those stage 0 of a 2D overlay draw samples (ui_up_factor:
+ * pre-transformed vertices, no depth writes) whose alpha has real cut-outs
+ * (up_eligible): text, icons, logos. Opaque art (menu backgrounds), video
+ * frames and render targets keep the game's own texture.
+ *
+ * xBR takes about 18 ms for a 256x256 atlas at 4x, so it runs on a worker
+ * thread: the texture draws as the game made it until the result is ready,
+ * a frame or two later (up_poll, at a later bind). Slots are FREE -> QUEUED
+ * (render thread) -> WORKING -> DONE (worker) -> FREE (render thread); the
+ * state moves under s_up_mu, and a DONE slot's buffers belong to the render
+ * thread. A job whose texture changed or was evicted meanwhile is "stale" and
+ * its result is dropped. */
+#define UP_SLOTS 64
+enum { UP_FREE, UP_QUEUED, UP_WORKING, UP_DONE };
+typedef struct {
+    int      state, stale, factor;
+    GlTex   *e;                       /* the entry it is for */
+    uint32_t offset, w, h, fmt;
+    uint64_t hash;                    /* e->hash when queued */
+    uint8_t *rgba, *out;              /* source; result (NULL: failed) */
+    int      ow, oh;
+    double   ms;
+} UpSlot;
+static UpSlot          s_up[UP_SLOTS];
+static pthread_mutex_t s_up_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  s_up_cv = PTHREAD_COND_INITIALIZER;
+static int             s_up_worker;   /* 1 running, -1 could not start */
+static int             s_ui_up = 1;   /* the setting */
+
+static void up_slot_free_bufs(UpSlot *s)
+{
+    free(s->rgba);
+    free(s->out);
+    s->rgba = s->out = NULL;
+}
+
+static void *up_worker_main(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&s_up_mu);
+    for (;;) {
+        UpSlot *s = NULL;
+        const uint8_t *src;
+        uint8_t *out;
+        int i, w, h, f, ow = 0, oh = 0;
+        struct timespec t0, t1;
+
+        for (i = 0; i < UP_SLOTS && !s; i++)
+            if (s_up[i].state == UP_QUEUED)
+                s = &s_up[i];
+        if (!s) {
+            pthread_cond_wait(&s_up_cv, &s_up_mu);
+            continue;
+        }
+        s->state = UP_WORKING;
+        src = s->rgba;
+        w = (int)s->w;
+        h = (int)s->h;
+        f = s->factor;
+        pthread_mutex_unlock(&s_up_mu);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        out = thug_xbr_scale(src, w, h, f, &ow, &oh);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        pthread_mutex_lock(&s_up_mu);
+        s->out = out;
+        s->ow = ow;
+        s->oh = oh;
+        s->ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3
+              + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        s->state = UP_DONE;
+    }
+    return NULL;
+}
+
+static int up_worker_start(void)
+{
+    pthread_t th;
+
+    if (s_up_worker)
+        return s_up_worker > 0;
+    if (pthread_create(&th, NULL, up_worker_main, NULL) == 0) {
+        pthread_detach(th);
+        s_up_worker = 1;
+    } else {
+        fprintf(stderr, "[PBGL] smooth text and icons: no worker thread; off\n");
+        s_up_worker = -1;
+    }
+    return s_up_worker > 0;
+}
+
+/* Forget e's pending job: freed now if nothing is working on it, else
+ * marked stale for the render thread to free once it is DONE. */
+static void up_cancel(GlTex *e)
+{
+    UpSlot *s;
+
+    if (!e->up_slot)
+        return;
+    s = &s_up[e->up_slot - 1];
+    pthread_mutex_lock(&s_up_mu);
+    if (s->state == UP_WORKING) {
+        s->stale = 1;
+    } else {
+        up_slot_free_bufs(s);
+        s->state = UP_FREE;
+    }
+    pthread_mutex_unlock(&s_up_mu);
+    e->up_slot = 0;
+}
+
 /* A free entry, or the least recently bound one, emptied and unlinked. */
 static GlTex *tex_slot(void)
 {
@@ -1153,6 +1280,7 @@ static GlTex *tex_slot(void)
         s_st.evictions++;
     }
     tex_unlink(victim);
+    up_cancel(victim);
     if (victim->tex) {
         glDeleteTextures(1, &victim->tex);
         unit_cache_reset();
@@ -1262,6 +1390,33 @@ static uint64_t tex_source_hash(const Nv2aTexture *t)
 
 static int is_pow2(uint32_t v) { return v && !(v & (v - 1)); }
 
+/* RGBA bytes into e's GL texture (made if need be) on the active unit, with
+ * a generated mip chain when asked. */
+static void tex_put(GlTex *e, const uint8_t *rgba, uint32_t w, uint32_t h,
+                    int mipped)
+{
+    if (!e->tex)
+        glGenTextures(1, &e->tex);
+    {
+        int au = s_active_unit;
+        unit_cache_reset();
+        s_active_unit = au;           /* unchanged by this bind */
+    }
+    glBindTexture(GL_TEXTURE_2D, e->tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)w, (GLsizei)h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    e->mipped = mipped;
+    if (mipped) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    }
+}
+
 static int tex_upload(GlTex *e, const Nv2aTexture *t)
 {
     uint32_t *argb;
@@ -1331,33 +1486,22 @@ static int tex_upload(GlTex *e, const Nv2aTexture *t)
         dst[3] = (uint8_t)(c >> 24);
         dst += 4;
     }
-    if (!e->tex)
-        glGenTextures(1, &e->tex);
-    {
-        int au = s_active_unit;
-        unit_cache_reset();
-        s_active_unit = au;           /* unchanged by this bind */
-    }
-    glBindTexture(GL_TEXTURE_2D, e->tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)t->width,
-                 (GLsizei)t->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     /* [thug] A mip chain for every swizzled or compressed (power-of-two)
      * texture, generated from level 0: the decoder reads level 0 only, and
      * at several times the Xbox's resolution an unmipped texture shimmers.
      * tex_params uses it when the title asked for mip filtering. */
-    e->mipped = d3d8_format_is_swizzled(t->color) || d3d8_format_dxt_block_bytes(t->color);
-    e->mipped = e->mipped && is_pow2(t->width) && is_pow2(t->height)
-                && (t->width > 1 || t->height > 1)
-                && !getenv("THUG_GL_NO_MIPS");          /* A/B switch */
-    if (e->mipped) {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    {
+        int mipped = d3d8_format_is_swizzled(t->color) || d3d8_format_dxt_block_bytes(t->color);
+        mipped = mipped && is_pow2(t->width) && is_pow2(t->height)
+                 && (t->width > 1 || t->height > 1)
+                 && !getenv("THUG_GL_NO_MIPS");          /* A/B switch */
+        tex_put(e, rgba, t->width, t->height, mipped);
     }
+    /* [thug] The game's own texture: a smooth one from an earlier content,
+     * finished or not, no longer applies. */
+    up_cancel(e);
+    e->up = 0;
+    e->up_no = 0;
     if (s_bind_log)
         fprintf(stderr, "[PBGLU] off %08X %ux%u fmt %02X mid %08X\n",
                 t->offset, t->width, t->height, t->color, argb[n / 2]);
@@ -1383,12 +1527,125 @@ static int tex_upload(GlTex *e, const Nv2aTexture *t)
     return 1;
 }
 
+static int tex_streamed(const Nv2aTexture *t);
+
+/* [thug] Text, icon or logo art: transparent around opaque shapes (at least
+ * 2% of the texels each), and small enough to be 2D art. */
+static int up_eligible(const uint32_t *argb, size_t n)
+{
+    size_t i, clear = 0, solid = 0;
+
+    for (i = 0; i < n; i++) {
+        uint32_t a = argb[i] >> 24;
+        clear += a < 16;
+        solid += a > 239;
+    }
+    return clear * 50 >= n && solid * 50 >= n;
+}
+
+/* [thug] Queue e (bound now as t) for xBR at `factor`. A texture that turns
+ * out not to be text or icon art is marked so and never decoded for this
+ * again; with every slot busy, a later bind asks again. */
+static void up_request(GlTex *e, const Nv2aTexture *t, int factor)
+{
+    size_t n = (size_t)t->width * t->height, i;
+    uint32_t *argb;
+    UpSlot *s = NULL;
+    int k;
+
+    if (tex_streamed(t) || t->width < 4 || t->height < 4
+            || t->width > 512 || t->height > 512 || !up_worker_start()) {
+        e->up_no = 1;
+        return;
+    }
+    pthread_mutex_lock(&s_up_mu);
+    for (k = 0; k < UP_SLOTS; k++) {
+        UpSlot *c = &s_up[k];
+        if (c->state == UP_DONE && c->stale) {     /* abandoned results */
+            up_slot_free_bufs(c);
+            c->state = UP_FREE;
+        }
+        if (!s && c->state == UP_FREE)
+            s = c;
+    }
+    pthread_mutex_unlock(&s_up_mu);
+    if (!s)
+        return;
+    argb = (uint32_t *)malloc(n * 4);
+    if (!argb || !nv2a_backend_decode_texture(t, argb) || !up_eligible(argb, n)) {
+        free(argb);
+        e->up_no = 1;
+        return;
+    }
+    for (i = 0; i < n; i++) {                       /* AARRGGBB -> RGBA bytes */
+        uint32_t c = argb[i];
+        uint8_t *d = (uint8_t *)&argb[i];
+        d[0] = (uint8_t)(c >> 16);
+        d[1] = (uint8_t)(c >> 8);
+        d[2] = (uint8_t)c;
+        d[3] = (uint8_t)(c >> 24);
+    }
+    s->e = e;
+    s->offset = t->offset;
+    s->w = t->width;
+    s->h = t->height;
+    s->fmt = t->color;
+    s->hash = e->hash;
+    s->factor = factor;
+    s->rgba = (uint8_t *)argb;
+    s->out = NULL;
+    s->stale = 0;
+    e->up_slot = (int16_t)(s - s_up + 1);
+    pthread_mutex_lock(&s_up_mu);
+    s->state = UP_QUEUED;
+    pthread_cond_signal(&s_up_cv);
+    pthread_mutex_unlock(&s_up_mu);
+}
+
+/* [thug] e's job, if finished: its result replaces the GL texture (on the
+ * active unit) unless the setting went off or the content moved on. */
+static void up_poll(GlTex *e)
+{
+    UpSlot *s = &s_up[e->up_slot - 1];
+    int state;
+
+    pthread_mutex_lock(&s_up_mu);
+    state = s->state;
+    pthread_mutex_unlock(&s_up_mu);
+    if (state != UP_DONE)
+        return;
+    if (!s->out) {
+        e->up_no = 1;                               /* no memory: leave it */
+    } else if (s_ui_up && s->e == e && s->hash == e->hash
+               && s->offset == e->offset) {
+        static uint32_t done;
+        static double mb;
+
+        tex_put(e, s->out, (uint32_t)s->ow, (uint32_t)s->oh, 1);
+        e->up = (int8_t)s->factor;
+        done++;
+        mb += (double)s->ow * s->oh * 4.0 * 4.0 / 3.0 / 1048576.0;
+        if (done <= 4 || done % 25 == 0 || s_verbose)
+            fprintf(stderr, "[PBGL] smooth text and icons: %08X %ux%u fmt %02X ->"
+                            " %dx%d (xBR %dx, %.1f ms); %u so far, %.0f MB\n",
+                    s->offset, s->w, s->h, s->fmt, s->ow, s->oh, s->factor,
+                    s->ms, done, mb);
+    }
+    up_slot_free_bufs(s);
+    pthread_mutex_lock(&s_up_mu);
+    s->state = UP_FREE;
+    pthread_mutex_unlock(&s_up_mu);
+    e->up_slot = 0;
+}
+
 /* Address mode and filter, as the CPU sampler applies them: the NV2A's 1 is
  * wrap, 2 mirror, everything else clamps; MAG 2 is tent, MIN 2/4/6 is tent at
  * level 0, everything else nearest. [thug] As sampler objects, made once per
  * combination and bound per unit, instead of five texture parameters set on
  * every bind. MIN 3-6 are the mip-filtered modes: with a chain to use, filter
- * trilinearly with anisotropy; without one, level 0 as the fork did. */
+ * trilinearly with anisotropy; without one, level 0 as the fork did.
+ * [thug] `mipped` bit 1: an xBR-magnified texture (up_request), which is
+ * larger than the title drew it for, so always linear and trilinear. */
 static GLuint sampler_for(const Nv2aTexture *t, int mipped)
 {
     static struct { uint32_t key; GLuint smp; } cache[64];
@@ -1397,14 +1654,14 @@ static GLuint sampler_for(const Nv2aTexture *t, int mipped)
     uint32_t mag = (t->filter >> 24) & 0xF, min = (t->filter >> 16) & 0xFF;
     uint32_t key, aniso = 1;
     GLuint smp;
-    int i, mip;
+    int i, mip, up = (mipped & 2) != 0;
 
     if (t->addr_u == 2) u = GL_MIRRORED_REPEAT;
     else if (t->addr_u != 1) u = GL_CLAMP_TO_EDGE;
     if (t->addr_v == 2) v = GL_MIRRORED_REPEAT;
     else if (t->addr_v != 1) v = GL_CLAMP_TO_EDGE;
-    f = (mag == 2 || min == 2 || min == 4 || min == 6) ? GL_LINEAR : GL_NEAREST;
-    mip = mipped && min >= 3 && min <= 6;
+    f = (up || mag == 2 || min == 2 || min == 4 || min == 6) ? GL_LINEAR : GL_NEAREST;
+    mip = (mipped & 1) && (up || (min >= 3 && min <= 6));
     minf = mip ? GL_LINEAR_MIPMAP_LINEAR : f;
     if (mip && s_aniso > 1.0f)
         aniso = (uint32_t)s_aniso;
@@ -1470,7 +1727,10 @@ static int tex_format_has_alpha(uint32_t fmt)
     return raw || !fmt_without_alpha(fmt);
 }
 
-static int stage_bind(uint32_t unit, const Nv2aTexture *t, uint32_t frame)
+/* want_up: [thug] the xBR factor this draw would like the texture at
+ * (ui_up_factor), 0 for none. */
+static int stage_bind(uint32_t unit, const Nv2aTexture *t, uint32_t frame,
+                      int want_up)
 {
     GlTex *e;
     uint32_t stamp = frame + 1;
@@ -1622,9 +1882,40 @@ static int stage_bind(uint32_t unit, const Nv2aTexture *t, uint32_t frame)
         e->hash_frame = stamp;
         e->upload_frame = stamp;
     }
+    /* [thug] Smooth text and icons: a finished xBR job replaces the texture;
+     * text or icon art drawn by an overlay draw is queued for one; with the
+     * setting off, the game's own texture comes back. */
+    if (e->up_slot)
+        up_poll(e);
+    if (want_up > 1 && e->up != want_up && !e->up_no && !e->up_slot)
+        up_request(e, t, want_up);
+    else if (!s_ui_up && e->up > 1)
+        tex_upload(e, t);
     e->stamp = ++s_tex_clock;
-    bind_unit(unit, e->tex, sampler_for(t, e->mipped));
+    bind_unit(unit, e->tex, sampler_for(t, e->mipped | (e->up > 1 ? 2 : 0)));
     return 1;
+}
+
+/* [thug] The xBR factor a draw's stage-0 texture should have (see
+ * up_request): 0 unless the setting is on and the draw is 2D overlay art --
+ * pre-transformed vertices (1/w exactly 1, which no projected vertex has) and
+ * no depth writes -- at an internal scale that magnifies it. 4x past 2x
+ * (1080p and above; widescreen 1080p is 3x across), else 2x. */
+static int ui_up_factor(const Nv2aBatch *b)
+{
+    uint32_t i, n;
+    float sc;
+
+    if (!s_ui_up || !b->textures[0] || b->state->depth_write)
+        return 0;
+    n = b->count < 6 ? b->count : 6;
+    for (i = 0; i < n; i++)
+        if (b->vertices[i].rhw != 1.0f)
+            return 0;
+    sc = s_scale_x > s_scale_y ? s_scale_x : s_scale_y;
+    if (sc < 1.5f)
+        return 0;
+    return sc > 2.0f ? 4 : 2;
 }
 
 /* ── State ──────────────────────────────────────────────────────────────── */
@@ -2754,10 +3045,13 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     /* Every stage the title programmed, then the pixel stage itself. A stage
      * with nothing to bind gets a white texel, which is what the CPU
      * rasteriser's sampler returns when it cannot read one. */
-    for (i = 0; i < 4; i++) {
-        s_stage_ok[i] = stage_bind(i, b->textures[i], s_frame);
-        if (!s_stage_ok[i])
-            bind_unit(i, s_white, 0);
+    {
+        int up = ui_up_factor(b);
+        for (i = 0; i < 4; i++) {
+            s_stage_ok[i] = stage_bind(i, b->textures[i], s_frame, i == 0 ? up : 0);
+            if (!s_stage_ok[i])
+                bind_unit(i, s_white, 0);
+        }
     }
     /* [thug] Each stage's coordinate scale, as stage_bind worked it out,
      * sent only when it changed. */
@@ -3659,6 +3953,9 @@ void nv2a_pb_gl_set_brightness(float b)
 }
 float nv2a_pb_gl_brightness(void) { return s_brightness; }
 void nv2a_pb_gl_set_msaa(int samples) { s_req_msaa = samples < 1 ? 1 : samples; }
+/* [thug] Smooth text and icons. Textures follow at their next bind. */
+void nv2a_pb_gl_set_ui_upscale(int on) { s_ui_up = on ? 1 : 0; }
+int  nv2a_pb_gl_ui_upscale(void) { return s_ui_up; }
 int  nv2a_pb_gl_msaa(void) { return s_req_msaa >= 0 ? msaa_clamp(s_req_msaa) : s_msaa; }
 int  nv2a_pb_gl_msaa_max(void) { return s_msaa_max; }
 void nv2a_pb_gl_set_overlay(void (*fn)(int dw, int dh)) { s_overlay = fn; }
@@ -3971,6 +4268,10 @@ int nv2a_pb_gl_init(void)
                                                                     : "8x MSAA") : "off",
                 s_msaa_max, s_sample_mask_ok ? "smoothed" : "not smoothed");
     }
+
+    /* [thug] Smooth text and icons (up_request): on unless THUG_UI_UPSCALE=0. */
+    e = getenv("THUG_UI_UPSCALE");
+    s_ui_up = !(e && e[0] == '0' && !e[1]);
 
     /* [thug] Anisotropic filtering for mip-filtered textures: core in 4.6,
      * an extension everywhere that matters before it. */

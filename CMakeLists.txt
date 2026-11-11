@@ -75,6 +75,7 @@ add_executable(thug
     src/main.c
     src/recomp_manual.c
     src/gpu/nv2a_pb_gl.c
+    src/gpu/xbr.c
     src/host/controls.c
     src/host/game_data.c
     src/host/host_window.c
@@ -165,3 +166,15 @@ endif()
 
 set_target_properties(thug PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ── Tests (ctest --test-dir build) ──────────────────────────────
+
+enable_testing()
+
+# The xBR magnifier behind "Smooth text and icons" (src/gpu/xbr.c).
+add_executable(thug-xbr-test tests/xbr_test.c src/gpu/xbr.c)
+target_include_directories(thug-xbr-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu)
+if(NOT MSVC)
+    target_link_libraries(thug-xbr-test PRIVATE m)
+endif()
+add_test(NAME xbr COMMAND thug-xbr-test)

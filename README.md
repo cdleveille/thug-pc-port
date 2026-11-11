@@ -43,8 +43,10 @@ In game, **F1** (or **L3 + R3**, both sticks clicked, on a pad) opens the settin
 overlay:
 - **Display:** aspect ratio (4:3, 16:10 or 16:9; the field of view widens
   to fit), resolution (common sizes for the chosen aspect, or native),
-  antialiasing (2x, 4x or 8x MSAA), brightness, fullscreen, vsync, a frame
-  rate limit, anisotropic filtering.
+  antialiasing (2x, 4x or 8x MSAA), smooth text and icons (the game's
+  640x480-era text, icons and logos enlarged with xBR, so their outlines are
+  smooth curves rather than soft staircases), brightness, fullscreen, vsync,
+  a frame rate limit, anisotropic filtering.
 - **Audio:** volume, and muting while the window is in the background.
 - **Controller:** vibration strength.
 - **Game:** the original 60 Hz timing, an FPS counter.
@@ -83,6 +85,7 @@ The variables below override the saved settings for one run.
 | `THUG_SHOW_FPS=1` | FPS counter in the corner |
 | `THUG_ANISO=<n>` | Anisotropic filtering (default 16) |
 | `THUG_MSAA=<n>` | Antialiasing: 1 (off), 2, 4 (default) or 8 samples |
+| `THUG_UI_UPSCALE=0` | Text, icons and logos with plain filtering, as before "Smooth text and icons" (default 1, on) |
 | `THUG_BRIGHTNESS=<b>` | Gamma on the final image, 0.5 to 2 (default 1) |
 | `THUG_VOLUME=<n>` | Master volume, 0 to 100 (default 100) |
 | `THUG_MUTE_UNFOCUSED=1` | Silent while the window is in the background |

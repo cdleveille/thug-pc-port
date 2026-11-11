@@ -23,7 +23,8 @@
 #endif
 
 /* The owner's choice (2026-11-11): 1920x1080 at 16:9, vsync, a 60 fps cap,
- * 16x anisotropic filtering and 4x MSAA, everything else as the game was. */
+ * 16x anisotropic filtering and 4x MSAA, smooth text and icons, everything
+ * else as the game was. */
 #define THUG_SETTINGS_DEFAULTS {                                  \
     2.25f,  /* res_scale: 1080 lines (1920x1080 at 16:9) */         \
     1,      /* vsync */                                             \
@@ -38,6 +39,7 @@
     100,    /* volume */                                            \
     0,      /* mute_unfocused */                                    \
     100,    /* rumble */                                            \
+    1,      /* ui_upscale: smooth text and icons */                 \
     0, 0,   /* window size: the built-in default */                 \
     THUG_WINDOW_POS_UNSET, THUG_WINDOW_POS_UNSET,                   \
     0,      /* window_maximized */                                  \
@@ -173,6 +175,7 @@ static const Item k_items[] = {
     { "volume",           "THUG_VOLUME",        0, &g_thug_settings.volume },
     { "mute_in_background", "THUG_MUTE_UNFOCUSED", 0, &g_thug_settings.mute_unfocused },
     { "vibration",        "THUG_RUMBLE",        0, &g_thug_settings.rumble },
+    { "smooth_text_and_icons", "THUG_UI_UPSCALE", 0, &g_thug_settings.ui_upscale },
     { "window_width",     "THUG_WINDOW_W",      0, &g_thug_settings.window_w },
     { "window_height",    "THUG_WINDOW_H",      0, &g_thug_settings.window_h },
     { "window_x",         "THUG_WINDOW_X",      0, &g_thug_settings.window_x },

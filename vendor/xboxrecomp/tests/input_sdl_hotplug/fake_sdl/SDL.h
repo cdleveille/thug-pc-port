@@ -66,6 +66,7 @@ int SDL_GameControllerRumble(SDL_GameController *controller,
                              Uint32 duration_ms);
 void SDL_LockJoysticks(void);
 void SDL_UnlockJoysticks(void);
+Uint32 SDL_GetTicks(void);
 int SDL_AtomicGet(SDL_atomic_t *value);
 int SDL_AtomicSet(SDL_atomic_t *value, int desired);
 

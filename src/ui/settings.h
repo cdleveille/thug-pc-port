@@ -32,6 +32,7 @@ typedef struct {
     int   volume;         /* master volume, 0-100                         THUG_VOLUME */
     int   mute_unfocused; /* silent while the window is in the background THUG_MUTE_UNFOCUSED */
     int   rumble;         /* vibration strength, 0 (off) - 100            THUG_RUMBLE */
+    int   ui_upscale;     /* smooth text and icons (xBR)                  THUG_UI_UPSCALE */
     /* The window as it was last left, in window (desktop-scaled) units:
      * restored at the next start. 0 x 0 is the built-in default size; the
      * position is THUG_WINDOW_POS_UNSET where the desktop places windows

@@ -59,6 +59,8 @@ shows something, the game's own code put it there.
 | `src/host/controls.c` | The keyboard's menu bindings (Enter/Space A, Backspace/Tab B, WASD/arrows D-pad; Esc START while skating and B in the menus, from the game's current level and `GameIsPaused`), through the toolkit's keyboard layer and its binding layers |
 | `src/host/window_icon.c` | The window icon (`thug.png`, embedded at build time by `scripts/embed_icon.py`) and the app ID `thug-pc-port` |
 | `src/tools/thug_extract.c` | `build/bin/thug-extract`: the same check and unpack as a command, for `scripts/build.sh` (lifting needs `default.xbe` before the game can be built) |
+| `src/gpu/xbr.c` | xBR, the edge-directed magnifier behind the overlay's "Smooth text and icons" (the renderer's `up_request`); no GL, tested by `tests/xbr_test.c` |
+| `tests/` | The port's own tests: `ctest --test-dir build` |
 | `src/recomp_manual.c` | Manual overrides, ICALL failure logging |
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
@@ -162,6 +164,13 @@ shared between targets. Captures log clears and each draw's zeta. The renderer a
 unasked (`[PBGL] bump-env:`).
 The toolkit's fixed-function path generates texture coordinates and applies
 texture matrices; `RECOMP_FFP_RAW_TEXCOORDS=1` turns that off for an A/B.
+"Smooth text and icons" (on by default; `THUG_UI_UPSCALE=0` is the A/B)
+replaces the stage-0 texture of 2D overlay draws (1/w exactly 1, no depth
+writes) that has alpha cut-outs with an xBR-magnified copy (4x above 2x
+internal scale, else 2x), made on a worker thread and swapped in at a later
+bind; `[PBGL] smooth text and icons:` lines log the first few. A swizzled
+texture can sit in two cache entries (the key includes a pitch register it
+only inherits), so each is magnified twice.
 The renderer takes the XDK's screen-space offset back out of every position
 (0.53125 on a surface without anti-aliasing, 1/32 pixel per AA factor on an
 anti-aliased one), so the title's 0 is the surface's edge at any internal
@@ -181,7 +190,7 @@ starts with the F1 overlay open (for screenshots). The player's settings live
 in `~/.config/thug-pc-port/settings.ini` and are loaded by every run, so a
 test that depends on one should set its `THUG_*` variable explicitly. The
 defaults (`src/ui/settings.c`) are 1080 lines (`THUG_RES_SCALE=2.25`), 4x
-MSAA and a 60 fps cap, headless too: a benchmark sets `THUG_FPS_LIMIT=0`, and
+MSAA, smooth text and icons and a 60 fps cap, headless too: a benchmark sets `THUG_FPS_LIMIT=0`, and
 a diagnosis run that wants small dumps sets `THUG_RES_SCALE=1`. A test that
 must not touch the player's files points `XDG_CONFIG_HOME` and
 `XDG_STATE_HOME` at scratch folders. A headless run that needs menu input:

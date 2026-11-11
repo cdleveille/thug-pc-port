@@ -153,25 +153,36 @@ static DWORD input_get_state_host(DWORD dwPort, XBOX_INPUT_STATE *pState)
     return ERROR_SUCCESS;
 }
 
-DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+/* The title's last speeds per port, as asked. XInput holds a pad's motors
+ * until told otherwise, as the Xbox did, so these are only for sending again
+ * when the player's strength or the overlay's focus changes. */
+static WORD g_motor[XBOX_MAX_CONTROLLERS][2];
+
+static DWORD rumble_send(DWORD port)
 {
     XINPUT_VIBRATION xi_vib;
 
+    xi_vib.wLeftMotorSpeed = rumble_scaled(g_motor[port][0]);
+    xi_vib.wRightMotorSpeed = rumble_scaled(g_motor[port][1]);
+    return XInputSetState(port, &xi_vib);
+}
+
+DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+{
     if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
         return ERROR_DEVICE_NOT_CONNECTED;
 
-    xi_vib.wLeftMotorSpeed = rumble_scaled(pVibration->wLeftMotorSpeed);
-    xi_vib.wRightMotorSpeed = rumble_scaled(pVibration->wRightMotorSpeed);
-    return XInputSetState(dwPort, &xi_vib);
+    g_motor[dwPort][0] = pVibration->wLeftMotorSpeed;
+    g_motor[dwPort][1] = pVibration->wRightMotorSpeed;
+    return rumble_send(dwPort);
 }
 
-/* Stop every connected pad's motors now. */
-static void input_stop_rumble(void)
+/* Send every connected pad its held speeds as they now scale. */
+static void input_resend_rumble(void)
 {
-    XINPUT_VIBRATION off = { 0, 0 };
     for (DWORD i = 0; i < XBOX_MAX_CONTROLLERS; i++)
         if (g_controller_connected[i])
-            XInputSetState(i, &off);
+            rumble_send(i);
 }
 
 BOOL xbox_InputIsConnected(DWORD dwPort)
@@ -299,13 +310,45 @@ static SDL_GameController *controller_for_port_locked(DWORD port)
     return g_controller_connected[port] ? controller : NULL;
 }
 
-/* Stop every open pad's motors now (the title's rumble lasts a second). */
-static void input_stop_rumble(void)
+/* Vibration. An Xbox pad runs its motors at the speeds it was last sent
+ * until it is sent others, and titles send a report only when a speed
+ * changes: Tony Hawk's Underground starts a grind's rumble once and stops it
+ * when the grind ends. An SDL rumble ends after a duration (SDL caps it at
+ * 0xFFFF ms), so each port keeps the title's last request and holds it for
+ * that long, and the input poll re-arms it while it is still meant to run.
+ * This used to give every request one second, and a grind's rumble died a
+ * second in.
+ *
+ * The speeds are kept as the title asked, so the player's strength and the
+ * overlay's focus (rumble_scaled) apply whenever they are sent; both re-send
+ * them when they change, and an overlay that closes mid-grind lets the grind
+ * rumble again. Everything here is under the joystick lock. */
+#define RUMBLE_HOLD_MS  0xFFFFu                  /* SDL's longest rumble */
+#define RUMBLE_REARM_MS 30000u
+
+static WORD   g_motor[XBOX_MAX_CONTROLLERS][2];  /* left, right, as asked */
+static Uint32 g_rumble_armed[XBOX_MAX_CONTROLLERS]; /* SDL_GetTicks when sent; 0 = still */
+
+static void rumble_send_locked(DWORD port, SDL_GameController *c)
 {
+    WORD left = rumble_scaled(g_motor[port][0]);
+    WORD right = rumble_scaled(g_motor[port][1]);
+    int on = left || right;
+
+    SDL_GameControllerRumble(c, left, right, on ? RUMBLE_HOLD_MS : 0);
+    g_rumble_armed[port] = on ? (SDL_GetTicks() | 1u) : 0;
+}
+
+/* Send every open pad its held speeds as they now scale: after the overlay
+ * takes or gives back the input focus, or the strength changes. */
+static void input_resend_rumble(void)
+{
+    if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
+        return;                         /* set before start-up: nothing open */
     SDL_LockJoysticks();
     for (int i = 0; i < XBOX_MAX_CONTROLLERS; i++)
         if (g_pads[i] && SDL_GameControllerGetAttached(g_pads[i]))
-            SDL_GameControllerRumble(g_pads[i], 0, 0, 0);
+            rumble_send_locked((DWORD)i, g_pads[i]);
     SDL_UnlockJoysticks();
 }
 
@@ -406,6 +449,10 @@ static DWORD input_get_state_host(DWORD dwPort, XBOX_INPUT_STATE *pState)
     pState->Gamepad.sThumbRX = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTX);
     pState->Gamepad.sThumbRY =
         (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
+    /* A rumble still meant to run, re-armed well before SDL ends it. */
+    if (g_rumble_armed[dwPort]
+            && SDL_GetTicks() - g_rumble_armed[dwPort] >= RUMBLE_REARM_MS)
+        rumble_send_locked(dwPort, c);
     SDL_UnlockJoysticks();
 
     if (dwPort == 0)
@@ -426,10 +473,10 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
         return ERROR_DEVICE_NOT_CONNECTED;
     }
 
-    /* SDL rumble needs a duration; refresh for ~1s on each call (the game
-     * polls vibration continuously). */
-    SDL_GameControllerRumble(c, rumble_scaled(pVibration->wLeftMotorSpeed),
-                             rumble_scaled(pVibration->wRightMotorSpeed), 1000);
+    /* Held until the title sends other speeds (see rumble_send_locked). */
+    g_motor[dwPort][0] = pVibration->wLeftMotorSpeed;
+    g_motor[dwPort][1] = pVibration->wRightMotorSpeed;
+    rumble_send_locked(dwPort, c);
     SDL_UnlockJoysticks();
     return ERROR_SUCCESS;
 }
@@ -480,16 +527,16 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
 void xbox_InputSetBlocked(int on)
 {
     g_input_blocked = on ? 1 : 0;      /* one aligned word: a flag, no ordering needed */
-    if (on)
-        input_stop_rumble();           /* not until the title's next update */
+    input_resend_rumble();             /* taken: the motors stop; given back: a rumble
+                                        * the title still holds resumes */
 }
 
-/* The player's vibration strength, 0 (off) to 1 (as the title asks). */
+/* The player's vibration strength, 0 (off) to 1 (as the title asks), applied
+ * at once to a rumble in progress. */
 void xbox_InputSetRumbleScale(float scale)
 {
     g_rumble_scale = scale < 0.0f ? 0.0f : scale > 1.0f ? 1.0f : scale;
-    if (g_rumble_scale <= 0.0f)
-        input_stop_rumble();
+    input_resend_rumble();
 }
 
 DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)

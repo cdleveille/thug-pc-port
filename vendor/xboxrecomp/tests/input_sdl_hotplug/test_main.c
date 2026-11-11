@@ -151,6 +151,8 @@ Sint16 SDL_GameControllerGetAxis(SDL_GameController *controller, int axis)
 
 static int s_rumble_calls;
 static uint16_t s_rumble_low, s_rumble_high;
+static Uint32 s_rumble_ms;
+static Uint32 s_ticks = 1000;               /* SDL_GetTicks, moved by hand */
 
 int SDL_GameControllerRumble(SDL_GameController *controller,
                              uint16_t low_frequency_rumble,
@@ -158,11 +160,16 @@ int SDL_GameControllerRumble(SDL_GameController *controller,
                              Uint32 duration_ms)
 {
     (void)controller;
-    (void)duration_ms;
     s_rumble_calls++;
     s_rumble_low = low_frequency_rumble;
     s_rumble_high = high_frequency_rumble;
+    s_rumble_ms = duration_ms;
     return 0;
+}
+
+Uint32 SDL_GetTicks(void)
+{
+    return s_ticks;
 }
 
 void SDL_LockJoysticks(void)
@@ -296,6 +303,41 @@ int main(void)
         xbox_InputSetRumbleScale(2.0f);       /* clamped to as-asked */
         CHECK(xbox_InputSetState(0, &v) == ERROR_SUCCESS);
         CHECK(s_rumble_low == 40000 && s_rumble_high == 20000);
+    }
+
+    /* An Xbox pad holds its motors until told otherwise, and a title sends
+     * only changes (Tony Hawk's Underground: once when a grind starts, once
+     * when it ends). So a request is held as long as SDL allows and re-armed
+     * by the poll while it should still run; a stop is not; the overlay's
+     * focus given back resumes a rumble still held. Each request used to last
+     * one second, and a grind's rumble died a second in. */
+    {
+        XBOX_VIBRATION v;
+        int calls;
+
+        v.wLeftMotorSpeed = 30000;
+        v.wRightMotorSpeed = 0;
+        CHECK(xbox_InputSetState(0, &v) == ERROR_SUCCESS);
+        CHECK(s_rumble_low == 30000 && s_rumble_ms >= 60000);
+        calls = s_rumble_calls;
+        s_ticks += 20000;                             /* 20 s in: still running */
+        CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
+        CHECK(s_rumble_calls == calls);
+        s_ticks += 20000;                             /* 40 s in: re-armed */
+        CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
+        CHECK(s_rumble_calls == calls + 1);
+        CHECK(s_rumble_low == 30000 && s_rumble_ms >= 60000);
+        xbox_InputSetBlocked(1);
+        CHECK(s_rumble_low == 0);
+        xbox_InputSetBlocked(0);
+        CHECK(s_rumble_low == 30000 && s_rumble_ms >= 60000);
+        v.wLeftMotorSpeed = 0;
+        CHECK(xbox_InputSetState(0, &v) == ERROR_SUCCESS);
+        CHECK(s_rumble_low == 0 && s_rumble_high == 0 && s_rumble_ms == 0);
+        calls = s_rumble_calls;
+        s_ticks += 60000;                             /* a stop stays stopped */
+        CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
+        CHECK(s_rumble_calls == calls);
     }
 
     s_controller.attached = 0;

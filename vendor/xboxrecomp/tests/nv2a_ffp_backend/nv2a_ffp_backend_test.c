@@ -338,6 +338,59 @@ int main(void)
         }
     }
 
+    /* An inline batch in fixed-function mode is object space like any other.
+     * D3D's DrawVerticesUP writes the vertices into the pushbuffer
+     * (INLINE_ARRAY), packed in attribute order: here float3 position,
+     * D3DCOLOR diffuse and float2 texture coordinate, 24 bytes. Tony Hawk's
+     * Underground draws its breaking glass so, in world units thousands out;
+     * read as pixels, as inline batches once were, the shards stuck to the
+     * screen. */
+    {
+        const float W[16] = { 0.5f, 0, 0, 320,         /* z -5000 -> depth 0.5 */
+                              0, -0.5f, 0, 240,
+                              0, 0, 0.0001f, 1,
+                              0, 0, 0, 1 };
+        const float P[3][3] = { { -200, -100, -5000 }, { 200, -100, -5000 },
+                                { 0, 300, -5000 } };
+        const float M[16] = { 320, 0, 0, 320,
+                              0, -240, 0, 240,
+                              0, 0, 1, 0,
+                              0, 0, 0, 1 };
+        int draws = s_be.draws;
+
+        for (i = 0; i < 16; i++)
+            mf(0x0680 + 4 * i, W[i]);
+        m(0x1768, 2);                                 /* attr 2 (normal) off */
+        m(0x1760, 2 | (3 << 4) | (24 << 8));          /* attr 0: float3 */
+        m(0x176C, 0 | (4 << 4) | (24 << 8));          /* attr 3: D3DCOLOR */
+        m(0x1784, 2 | (2 << 4) | (24 << 8));          /* attr 9: float2 */
+        m(0x17FC, 5);                                 /* BEGIN_END: triangles */
+        for (i = 0; i < 3; i++) {
+            mf(0x1818, P[i][0]); mf(0x1818, P[i][1]); mf(0x1818, P[i][2]);
+            m(0x1818, 0x66808080u);
+            mf(0x1818, 0.25f); mf(0x1818, 0.5f);
+        }
+        m(0x17FC, 0);
+        CHECK(s_be.draws == draws + 1 && s_be.count == 3);
+        /* (x/2 + 320, -y/2 + 240): (-200, -100) -> (220, 290), (200, -100) ->
+         * (420, 290), (0, 300) -> (320, 90). */
+        CHECK(near_(s_be.v[0].x, 220) && near_(s_be.v[0].y, 290));
+        CHECK(near_(s_be.v[1].x, 420) && near_(s_be.v[1].y, 290));
+        CHECK(near_(s_be.v[2].x, 320) && near_(s_be.v[2].y, 90));
+        CHECK(near_(s_be.v[0].rhw, 1.0f));
+        CHECK(s_be.v[0].diffuse == 0x66808080u);
+        /* A 2D coordinate reads (s, t, 0, 1); q = 0 would sample nothing. */
+        CHECK(near_(s_be.v[0].st[0][0], 0.25f) && near_(s_be.v[0].st[0][1], 0.5f));
+        CHECK(near_(s_be.v[0].st[0][3], 1.0f));
+
+        for (i = 0; i < 16; i++)
+            mf(0x0680 + 4 * i, M[i]);
+        m(0x1760, 2 | (3 << 4) | (12 << 8));
+        m(0x176C, 0 | (4 << 4) | (4 << 8));
+        m(0x1768, 2 | (3 << 4) | (12 << 8));
+        m(0x1784, 2);
+    }
+
     /* A garbage index (the walk is 32 bits wide now) must not reach outside
      * guest memory: start 0xFFFFFF at a 12-byte stride is 200 MB past the
      * array, and the batch is dropped instead of read. The test buffer is

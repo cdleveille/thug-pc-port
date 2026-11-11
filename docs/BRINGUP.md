@@ -31,22 +31,90 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
-### 2026-11-11: glass shards look floaty and linger (investigated, no change)
+### 2026-11-11: smooth text and icons (xBR)
+
+- Owner report: on-screen text is readable but looks low-res, with noisy,
+  stepped edges.
+- Cause: the game's text, icons and logos are bitmaps drawn 1:1 for
+  640x480 (about 11 pixels a glyph), and at 1080p the renderer magnifies them
+  3x across and 2.25x down with bilinear filtering (what the game asks for).
+  The trick font's grey speckle is its own design.
+- Compared offline on the dumped fonts (`THUG_GL_TEXDUMP`): bilinear,
+  Catmull-Rom, an alpha re-cut, and xBR, hq2x, Scale2x and Eagle. xBR and
+  hq2x draw the outlines as smooth curves; Catmull-Rom only sharpens a little.
+- Built (NOTES "Decisions"): `src/gpu/xbr.c`, xBR 2x on RGBA (twice for 4x;
+  about 18 ms for a 256x256 atlas at 4x, so on a worker thread), and the
+  renderer swaps it in for the stage-0 texture of 2D overlay draws whose alpha
+  has cut-outs. Overlay: Display, "Smooth text and icons", on by default;
+  `THUG_UI_UPSCALE`, settings key `smooth_text_and_icons`.
+- Checked:
+  - `tests/xbr_test.c` (`ctest --test-dir build`): flat areas and straight
+    edges come out as plain pixel doubling, an alpha-only staircase is found
+    and blended, a shallow edge ramps along its rows. It fails with alpha left
+    out of the distance, and with the wrong neighbour subpixel blended.
+  - Headless at 1080p, menus and free skate: 24 textures magnified (menu and
+    trick fonts, button icons, HUD art), about 30 MB, no repeat requests; menu
+    and trick text visibly smoother, frame rate as before.
+  - A temporary switch flipped the setting off and on mid-run: the game's own
+    textures came back, then the smooth ones.
+  - The overlay shows the checkbox (screenshot).
+- Seen on the way: a swizzled texture can occupy two cache entries (the key
+  includes a pitch register it only inherits), so it is uploaded, and
+  magnified, twice. Harmless; noted in AGENTS.md.
+
+### 2026-11-11: grind rumble stops after a second
+
+- Owner report: grinding a rail starts the vibration, which stops after one
+  or two seconds although the grind goes on.
+- `RECOMP_USB_TRACE=1` in a headless run (skating, jumping, grinding) shows
+  how THUG drives the motors: one rumble report when an effect starts (left
+  motor 32639, 52223 or 65279) and one with 0 when it ends, nothing in
+  between. An Xbox pad keeps the last speeds it was sent, but the toolkit gave
+  each request to SDL with a 1000 ms duration, assuming the title re-sends
+  every frame.
+- Fix (toolkit, NOTES "Toolkit changes"): the speeds are held until the
+  title sends others (SDL's longest duration, re-armed from the input poll
+  every 30 s), and the overlay's focus or a strength change re-sends them.
+  `tests/input_sdl_hotplug` covers it.
+- Owner to confirm with a pad: the rumble should last as long as the grind.
+- Glass shards (previous entries): the owner finds them better but still a
+  little floaty; their fall is the game's own (128 units/s², a third of real
+  gravity). Left as is for now; the owner may revisit.
+
+### 2026-11-11: glass shards stuck to the screen (inline batches never transformed)
 
 - Owner report: in Manhattan, glass broken by the skater leaves shards that
-  drift and stay on screen a long time.
-- The shatter is the game's script `ShatterAndDie` and the engine's
-  `Shatter` (NOTES "Title-side facts"). Shard life (4 s), gravity (128 units
-  a second squared, about a third of real gravity) and launch speeds are the
-  game's own defaults and script values, and the update runs on
-  `FrameLength()`. Measured with gdb: about 1.0 vblank per frame at the 60 fps
-  cap (a 1/60 s step, as on the console). Nothing in the port changes how
-  long or how fast the shards move.
-- Open: whether the shards look as they should. In the owner's screenshot
-  they are flat, bright, nearly opaque triangles; if the console drew them
-  more see-through, they would be less noticeable for those four seconds. An
-  F10 capture of the shards (and of an unbroken pane) would show their
-  material and blending.
+  look "floaty" and stay on screen too long.
+- Timing first: the shatter is the game's script `ShatterAndDie` and the
+  engine's `Shatter` (NOTES "Title-side facts"). Shard life (4 s), gravity
+  (128 units a second squared, about a third of real gravity) and launch
+  speeds are the game's own, and the update runs on `FrameLength()`
+  (measured with gdb: a 1/60 s step at the 60 fps cap, as on the console).
+  The motion was never the problem.
+- The owner's F10 captures (shards in flight, then an unbroken pane): the
+  pane draws with texture `0x833EE000` (64×64 DXT, amber, vertex alpha
+  `0x66`) through the fixed-function transform. The shards draw with the
+  same texture and alpha, 210 vertices (70 shards), but their first vertex
+  was at (976, 198) with depth −5782 and 1/w = 1, and texture coordinates
+  (s, t, 1, 0). Those are world coordinates drawn as pixels.
+- Cause: the shards are a `DrawVerticesUP` (`sub_0018B970`), so the vertices
+  arrive in the pushbuffer as an `INLINE_ARRAY`, and the executor sent every
+  inline batch to its screen-space path regardless of the transform mode. The
+  shards were pinned to the screen, ignored the camera, rose as they fell
+  (screen y points down) and, with q = 0, sampled the texture as white.
+- Checked before changing it: a survey of a boot into free skate counted
+  about 380,000 inline batches and one immediate (`SET_VERTEX4F`) batch a
+  frame, all in vertex-program mode (HUD, text). Fixed-function inline
+  batches are only the shards.
+- Fix (toolkit, NOTES "Toolkit changes"): in fixed-function mode an inline
+  batch is transformed like any other. New case in `tests/nv2a_ffp_backend`
+  (fails with the old rule: the triangle lands at its raw coordinates with
+  q ≠ 1). The executor tests (`nv2a_ffp_backend`, `nv2a_pb_constants`,
+  `nv2a_raster_batch`, `nv2a_tex_filter`) pass, and a headless run into free
+  skate draws the HUD, text and level as before.
+- Not checked in the game: breaking glass headless needs a route to a pane.
+  Owner to confirm the shards now fly from the pane in 3D, amber and
+  see-through.
 
 ### 2026-11-11: the overlay's pad chord is L3 + R3
 

@@ -93,6 +93,11 @@ float nv2a_pb_gl_brightness(void);
 void  nv2a_pb_gl_set_msaa(int samples);    /* 1 (off), 2, 4 or 8 */
 int   nv2a_pb_gl_msaa(void);
 int   nv2a_pb_gl_msaa_max(void);           /* what the driver allows, up to 8 */
+/* [thug] Smooth text and icons: the game's text, icon and logo textures
+ * magnified with xBR (src/gpu/xbr.c) instead of plain bilinear filtering.
+ * THUG_UI_UPSCALE=0 starts with it off. Renderer thread (the overlay). */
+void  nv2a_pb_gl_set_ui_upscale(int on);
+int   nv2a_pb_gl_ui_upscale(void);
 
 /* [thug] Glitch capture (F10): the next two frames' draws to the log and
  * their render targets as PPM under <state dir>/captures/<time>/. */

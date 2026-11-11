@@ -2045,12 +2045,19 @@ static uint32_t vertex_color(uint32_t index)
  *
  * ponytail: no fog coordinate, no specular, no point sprites. */
 
-/* Is this batch transformed by the fixed-function unit? Inline-array batches
- * are left to the screen-space path, as they were before. */
+/* Is this batch transformed by the fixed-function unit? The transform mode
+ * decides, however the vertices arrived: in the pushbuffer (INLINE_ARRAY,
+ * SET_VERTEX4F) as much as through arrays. XDK D3D sends pre-transformed
+ * (XYZRHW) vertices through its passthrough program, never the fixed-function
+ * unit, so in fixed mode a batch is always object space.
+ *
+ * Inline batches used to go to the screen-space path, which drew object-space
+ * positions as pixels: Tony Hawk's Underground's breaking glass
+ * (DrawVerticesUP, fixed function, world coordinates in the thousands) stuck
+ * to the screen as white triangles that drifted up as the shards fell. */
 static int batch_is_ffp(void)
 {
-    return s_gpu.composite_set && (s_gpu.xf_mode & 3) != 2
-        && !s_gpu.inline_active;
+    return s_gpu.composite_set && (s_gpu.xf_mode & 3) != 2;
 }
 
 /* Fixed-function vertex lighting (SET_LIGHTING_ENABLE).
