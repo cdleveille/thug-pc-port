@@ -32,6 +32,20 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-11: WASD is the left stick
+
+- Owner request: W A S D drive the left stick, the arrow keys stay the
+  d-pad. `src/host/controls.c` binds them to the toolkit's
+  `INPUT_LSTICK_*` controls in both layers (skating and menus), with
+  `INPUT_DIAGONAL_ROUND`: W+A puts the stick on its circle (-23169, 23169),
+  as a real stick goes, not full on both axes.
+- Checked: a scratch probe through the toolkit's keyboard layer, both
+  layers: W/S/A/D full deflection on one axis with no d-pad bit, W+A on the
+  circle, Up and Left the d-pad with the stick at rest. A scripted run showed
+  the main menu follows the left stick (down, down, up: Story Mode to High
+  Score / Free Skate), so WASD still moves through the menus. Skating with
+  the keys needs the owner's hands.
+
 ### 2026-11-11: the Windows build
 
 - **Set up** on the owner's Windows 11 machine (RTX 4080, a scaled 4K

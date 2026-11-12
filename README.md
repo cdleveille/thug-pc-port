@@ -85,7 +85,8 @@ The variables below override the saved settings for one run.
 | Enter or Space | A (accept) |
 | Backspace or Tab | B (back) |
 | Escape | START (pause) while skating; B (back) in the main menu's screens and the pause menu, so it also leaves the pause menu |
-| W A S D or arrow keys | D-pad |
+| W A S D | Left stick (steering) |
+| Arrow keys | D-pad |
 | F11 or Alt+Enter | Toggle borderless fullscreen |
 | F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` (Windows: `%LOCALAPPDATA%\thug-pc-port\captures\`) and the log, for a bug report |
 | `THUG_FULLSCREEN=1` | Start fullscreen |

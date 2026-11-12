@@ -4,7 +4,9 @@
  *   Enter, Space          A
  *   Backspace, Tab        B (back)
  *   Escape                START while skating, B (back) in the menus
- *   W A S D, arrows       D-pad
+ *   W A S D               left stick (a diagonal reaches the stick's circle,
+ *                         as a real stick does, not full on both axes)
+ *   arrows                D-pad
  *
  * Escape pauses, and in the main menu's screens and the pause menu goes
  * back, as on most PC games. It follows the game's own state (controls.c:

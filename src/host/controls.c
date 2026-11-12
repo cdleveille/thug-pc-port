@@ -40,22 +40,30 @@ static void bind(InputBindings *b, int control, const char *keys)
 void thug_keyboard_controls_install(void)
 {
     /* Key names as input_map.h reads them: logical keys (the key labelled
-     * W), as the toolkit's keyboard layer records them. */
+     * W), as the toolkit's keyboard layer records them. WASD is the left
+     * stick (steering, as on a pad), the arrows the d-pad. */
     static const struct {
         int         control;
         const char *keys;
     } k_bindings[] = {
-        { INPUT_A,          "enter, space" },
-        { INPUT_DPAD_UP,    "w, up" },
-        { INPUT_DPAD_DOWN,  "s, down" },
-        { INPUT_DPAD_LEFT,  "a, left" },
-        { INPUT_DPAD_RIGHT, "d, right" },
+        { INPUT_A,            "enter, space" },
+        { INPUT_LSTICK_UP,    "w" },
+        { INPUT_LSTICK_DOWN,  "s" },
+        { INPUT_LSTICK_LEFT,  "a" },
+        { INPUT_LSTICK_RIGHT, "d" },
+        { INPUT_DPAD_UP,      "up" },
+        { INPUT_DPAD_DOWN,    "down" },
+        { INPUT_DPAD_LEFT,    "left" },
+        { INPUT_DPAD_RIGHT,   "right" },
     };
     InputBindings play = { 0 }, menu;
     size_t i;
 
     for (i = 0; i < sizeof k_bindings / sizeof k_bindings[0]; i++)
         bind(&play, k_bindings[i].control, k_bindings[i].keys);
+    /* Two keys at once (W+A) push the stick to the edge of its circle, as a
+     * real stick goes, not full on both axes: no faster on a diagonal. */
+    play.diagonal = INPUT_DIAGONAL_ROUND;
     menu = play;
     bind(&play, INPUT_B, "backspace, tab");
     bind(&play, INPUT_START, "escape");
