@@ -137,6 +137,48 @@ Facts about the binary and the decisions made around it. Keep this current.
     DLL detach after killing threads that may hold its locks. Restarting is
     `CreateProcessW` with the starting command line and environment (no
     exec on Windows; the PID changes).
+- **2026-11-12: Performance: what was kept, what was not, and where the
+  time goes.** Profiled on Windows with the built-in sampler (`THUG_PROF`,
+  `scripts/prof_report.py`). In a level the game's thread does about 18% real
+  work and spins the rest in D3D's kickoff (`sub_00190730`, the PFB flush
+  wait) on the NV2A executor, which is the critical path; a game worker
+  (`sub_00175520`) spins a core in `KeWaitForMultipleObjects` but is not on
+  it. Kept (toolkit table above; the renderer's own: the builtin `isfinite`,
+  indexed draws through `glDrawElementsBaseVertex` from the same persistent
+  ring, `THUG_GL_NO_INDEXED=1` the A/B): the executor's cost per index from
+  205 to about 130 ns and the frame time per 1,000 draws from about 18 to
+  12 ms, measured against the previous commit in alternating runs of the
+  same route (headless, 1080p, uncapped; about 1.5x in levels). Tried and
+  dropped, measured on the same route:
+  - `-march=x86-64-v3` (AVX2): no gain (noise).
+  - `-O3`: about 3%, inside run-to-run noise (which is up to 10% on this
+    machine); not worth the compile time.
+  - A render thread for GL (Black's design): GL submission is only about 1 ms
+    a frame of the executor's time, and copying each batch into the queue cost
+    about as much as it saved; the end-of-walk drain needed for safety (the
+    title may reuse memory once a segment is acknowledged) took the rest.
+  - Vertex-program operands as pointers instead of copies: slower (58-65
+    against 53-55 ns per vertex in a micro-benchmark of THUG-like programs);
+    the copies are cheap in L1, and transposing every input read costs more.
+    In the game the same interpreter costs about 130 ns a vertex: cache
+    pressure, not arithmetic.
+  What is left is mostly vertex work on the CPU: about half of every walk is
+  transform (vertex programs and fixed function), then assembly and clipping.
+  The next large step is the one Black's SDK takes: vertex programs (and the
+  fixed-function transform) as GPU shaders (`docs/WINDOWS.md`, "Still open").
+- **2026-11-12: What Black's recompiler does differently** (TGP482's
+  XboxXBE-Recomp SDK, MIT, which Black, the Splinter Cell, 007 and Red Dead
+  Revolver ports use). It implements the XDK's Direct3D 8 at the API level
+  (found by signatures) and draws with D3D12 on a render thread, translating
+  vertex programs, combiners and the fixed-function pipeline to HLSL; there
+  is no pushbuffer and no CPU vertex work. Its generated code passes the
+  registers as `X86Context& __restrict` with the guest memory base as a
+  parameter, flags in locals, and plain (non-volatile, `may_alias`) memory
+  accesses, where xboxrecomp uses thread-local globals and `volatile`
+  accesses through a global offset. For THUG the D3D route would replace the
+  whole renderer; the vertex-program translation (`runtime/gpu/shaders.cpp`)
+  is the part worth borrowing. The code-generation model would speed the
+  game's own thread, which is not the bottleneck today.
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.
@@ -190,6 +232,12 @@ carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`,
 | vendor | `nv2a_pb_exec.c`: `NV_TLS` (the DXT block cache) is `__declspec(thread)` only under MSVC, `__thread` otherwise, as every other thread-local macro in the toolkit already was. Under MinGW clang the declspec was ignored with a warning, so the CPU rasteriser's workers shared one cache. Checked by the build: the `unknown attribute 'thread'` warning is gone. | The first MinGW build of THUG |
 | vendor | `src/platform/CMakeLists.txt`: under MinGW the `platform` interface links `Threads::Threads` (winpthreads), and the `nv2a_ffp_backend`, `nv2a_pb_constants`, `nv2a_pb_walk`, `nv2a_raster_batch` and `nv2a_tex_filter` tests link `pthread` there too. `nv2a_pb_scan.c` and `nv2a_pb_exec.c` call `clock_gettime` (profiling) on every host. Checked by those suites and 36 others, which all failed to link (`undefined symbol: clock_gettime64`) and now pass. | Running the toolkit's suites under MSYS2 CLANG64 |
 | vendor | `nv2a_pb_exec.c`: the Windows raster pool's small-batch path sets `s_raster_last_workers = 1`, as the pthreads branch does; it kept the previous batch's count. Diagnostic only (the caller drew the batch either way). Test: `tests/nv2a_raster_batch`, which failed on Windows ("a batch of 2944 pixels woke 4 workers") and passes. | Same |
+| vendor | `nv2a_pb_exec.c`, `xbox_memory_layout.c`, `apu_mmio_hook.c`: three `getenv` calls on hot paths are read once: `RECOMP_PB_EXEC_VERBOSE` in `draw_primitive` (every draw), `RECOMP_PB_SEGMENT_LEGACY` in the ack thread (every kick), `RECOMP_APU_TRACE` in the APU trap handler (every trapped access). The `[GPU] draw #N` line every 200 draws only prints under `RECOMP_PB_EXEC_VERBOSE`. Checked by the profiler (no CRT in the executor's samples) and the executor suites. | Profiling on Windows (`THUG_PROF`): Windows' UCRT `getenv` scans the whole environment under a lock, and the per-draw one was over 40% of the executor's time in a level; the log line was another 9% (unbuffered stderr, a system call each) |
+| vendor | `nv2a_pb_exec.c`: `CLEAR_SURFACE` clears the CPU rasteriser's depth buffer only when no back end draws; a back end clears its own (`clear_surface` hands it the clear) and the CPU one is never read then. | 1280x1024 floats per clear, 6% of the executor in a level |
+| vendor | `xbox_memory_layout.c` (`nv2a_ack_busy_bits`): `xbox_VblankAckHeld()`, which reads the clock, is asked once per pass of the ack loop for the two vblank registers, not once per acknowledged register. | About 9% of the executor thread (six clock reads every pass) |
+| vendor | `nv2a_pb_exec.c`: `isfinite`, `isinf` and `signbit` are the compiler builtins under GCC and clang (MinGW's are calls into `__fpclassify` with branches; the answers are the same), and `pack_color` clamps with compares that become min/max and converts through `int` (bit-identical for finite input; a NaN packs to 0, as the unsigned conversion of a NaN gave on x86-64). | Per-vertex costs in the profile: `pack_color` was 40% of `backend_from_xf` |
+| vendor | `nv2a_backend.h`, `nv2a_pb_exec.c`: indexed back-end batches. A back end that sets `NV2A_BACKEND_INDEXED` in the new `Nv2aBackend.flags` gets each vertex a batch's triangles share once (`Nv2aBatch.vertices`, `count`) and the triangle list as `indices`/`index_count`; corners made by clipping get vertices of their own. Every other back end gets plain triangle lists as before (a three-member initialiser leaves `flags` 0). Test: `tests/nv2a_ffp_backend` (a four-vertex strip: six vertices for a plain back end; four vertices and six indices for an indexed one, naming the same triangles). | `backend_from_xf` and the renderer's vertex fill converted and copied every shared vertex once per triangle (about 2.7 times per unique vertex in a level) |
+| vendor | `nv2a_pb_exec.c`: `RECOMP_EXEC_PROFILE` also prints walks (kicked segments) per frame. | Diagnostic: THUG kicks 15-36 segments a frame of 25-40 draws each |
 | vendor | `nv2a_pb_exec.c` (`batch_is_ffp`): in fixed-function mode an inline batch (`INLINE_ARRAY`, `SET_VERTEX4F`) is transformed like an array batch. Before, every inline batch went to the screen-space path, which reads positions as pixels. XDK D3D draws pre-transformed (XYZRHW) vertices through its passthrough program, so fixed mode always means object space. Test: `tests/nv2a_ffp_backend` (an inline triangle in world units, coloured and textured). | THUG's breaking glass (`DrawVerticesUP`, fixed function) stuck to the screen as white triangles that drifted up as the shards fell: world positions drawn as pixels, texture q 0. In menus and free skate every other inline batch (about 380,000, and the one immediate batch a frame) runs a vertex program, so nothing else changes |
 
 Not fixed, noted: `win32_compat.c` `VirtualAlloc` maps a `PAGE_NOACCESS`

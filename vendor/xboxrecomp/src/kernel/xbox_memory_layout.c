@@ -1427,6 +1427,10 @@ static void framebuffer_probe_tick(void)
 static void nv2a_ack_busy_bits(int flip_held)
 {
     volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
+    /* Asked once per pass, not once per register: each answer reads the
+     * clock, and six of them every pass of this loop were a tenth of the
+     * executor thread's time. */
+    int vbl_held = -1;
 
     if (!regs)
         return;
@@ -1442,7 +1446,9 @@ static void nv2a_ack_busy_bits(int flip_held)
          * vblank and the DPC's read of PMC_INTR_0 took the vblank away
          * from the DPC: no ack, no count, and the title's present at
          * vblank slipped a frame. */
-        if (xbox_VblankAckHeld()) {
+        if ((NV2A_ACK[i].offset == NV2A_ACK_PMC_INTR_0
+             || NV2A_ACK[i].offset == NV2A_ACK_PCRTC_INTR_0)
+                && (vbl_held < 0 ? (vbl_held = xbox_VblankAckHeld()) : vbl_held)) {
             if (NV2A_ACK[i].offset == NV2A_ACK_PMC_INTR_0)
                 mask &= ~NV2A_ACK_PMC_INTR_PCRTC;
             else if (NV2A_ACK[i].offset == NV2A_ACK_PCRTC_INTR_0)
@@ -1561,6 +1567,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                     extern void nv2a_pb_resync(uint32_t);
                     extern int  nv2a_pb_dma_walk(void);
                     extern void nv2a_pb_scan_segment(uint32_t, uint32_t);
+                    /* Read once: this runs on every kick. */
+                    static int segment_legacy = -1;
+                    if (segment_legacy < 0)
+                        segment_legacy = getenv("RECOMP_PB_SEGMENT_LEGACY") != NULL;
 
                     if (nv2a_pb_dma_walk()) {
                         uint32_t get_now = *(volatile uint32_t *)
@@ -1575,7 +1585,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                             nv2a_pb_resync(get_now);
                         if (put != last_put)
                             nv2a_pb_scan(put);
-                    } else if (!getenv("RECOMP_PB_SEGMENT_LEGACY")) {
+                    } else if (!segment_legacy) {
                         /* The default: what was submitted since the last
                          * walk, following the ring's JUMP and ending at PUT
                          * (nv2a_pb_scan_to_put). A GET that is not what we

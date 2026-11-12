@@ -125,15 +125,14 @@ console one).
   hand: the scripted runs pressed Start and nothing else.
 - **Sound** initialises (XAudio2, 48 kHz) and the APU runs, but every test
   run was muted; whether it sounds right needs ears.
-- **Performance in levels** is lower than on Linux. Headless, 1080p, free
-  skate New Jersey, uncapped: about 63-66 fps at 1,000 draws a frame (Linux:
-  83-84), 40 fps in the heaviest views (2,100 draws). `RECOMP_EXEC_PROFILE`
-  puts the executor's walk at about 14 ms a frame for 1,100 batches, 184 ns
-  per index (Linux 155-170 ns). GL submission is 1.8 ms of it, about 1.7 us a
-  draw (Linux 2.5 us), so the difference is in the executor's own work
-  (transform 4.3 ms, decode and state 5.2 ms), not the driver. Not investigated:
-  Windows TLS access (every guest register is a thread-local), the
-  scheduler, or codegen. With the default 60 fps cap most views hold 60.
+- **Performance in levels.** The 2026-11-11 gap to Linux was mostly the
+  C runtime: an uncached `getenv` per draw and MinGW's `isfinite` (fixed
+  2026-11-12 with other executor work, BRINGUP). Headless 1080p in New
+  Jersey, uncapped, the executor now costs about 130 ns per index (from 205)
+  and frames take about 12 ms per 1,000 draws (from 18). What is left is
+  CPU vertex work, about half of every walk: the next step is vertex
+  programs and the fixed-function transform as GPU shaders, as Black's SDK
+  does (NOTES decision log).
 - **Pad hotplug and rumble** through XInput: a connected pad was found on
   port 1 at start-up; plugging, unplugging and rumble need hands.
 - **gdb attach:** `THUG_DEBUG_ATTACH` is Linux-only; MSYS2's `gdb -p` should

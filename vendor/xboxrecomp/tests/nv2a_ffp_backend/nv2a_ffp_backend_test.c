@@ -92,6 +92,33 @@ static void be_flip(void) { s_be.flips++; }
 
 static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip };
 
+/* An indexed back end (NV2A_BACKEND_INDEXED): the vertices and the indices
+ * as handed over. */
+static struct {
+    int draws;
+    uint32_t count, index_count;
+    Nv2aVertex v[8];
+    uint32_t idx[16];
+    int had_indices;
+} s_ix;
+
+static void ix_draw(const Nv2aSurface *s, const Nv2aBatch *b)
+{
+    uint32_t i;
+
+    (void)s;
+    s_ix.draws++;
+    s_ix.count = b->count;
+    s_ix.index_count = b->index_count;
+    s_ix.had_indices = b->indices != NULL;
+    for (i = 0; i < b->count && i < 8; i++)
+        s_ix.v[i] = b->vertices[i];
+    for (i = 0; b->indices && i < b->index_count && i < 16; i++)
+        s_ix.idx[i] = b->indices[i];
+}
+
+static const Nv2aBackend s_ix_backend = { be_clear, ix_draw, be_flip, NV2A_BACKEND_INDEXED };
+
 /* ---- driving the executor ---------------------------------------------- */
 extern void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param);
 static void m(uint32_t method, uint32_t param) { nv2a_pb_exec_method(0, method, param); }
@@ -440,6 +467,46 @@ int main(void)
     CHECK(s_be.flips == 0);
     m(0x0130, 0);                                     /* FLIP_STALL */
     CHECK(s_be.flips == 1);
+
+    /* Indexed batches. A strip of four vertices is two triangles that share
+     * two of them: a plain back end gets six vertices, an indexed one each
+     * vertex once and six indices, which name exactly the plain list. */
+    {
+        Nv2aVertex plain[6];
+        uint32_t k;
+
+        m(0x0338, 0);                                 /* no depth bias from above */
+        putf(0x2000, -1); putf(0x2004, -1); putf(0x2008, 0);
+        putf(0x200C,  1); putf(0x2010, -1); putf(0x2014, 0);
+        putf(0x2018, -1); putf(0x201C,  1); putf(0x2020, 0);
+        putf(0x2024,  1); putf(0x2028,  1); putf(0x202C, 0);
+        for (i = 0; i < 4; i++) {
+            put32(0x3000 + 4 * i, 0xFF000000u | (0x10u * (i + 1)));
+            putf(0x4000 + 12 * i, 0); putf(0x4004 + 12 * i, 0); putf(0x4008 + 12 * i, 1);
+        }
+        m(0x17FC, 6);                                 /* BEGIN_END: triangle strip */
+        m(0x1810, 3u << 24);                          /* DRAW_ARRAYS: 4 vertices */
+        m(0x17FC, 0);
+        CHECK(s_be.count == 6);
+        memcpy(plain, s_be.v, sizeof plain);
+
+        nv2a_backend_register(&s_ix_backend);
+        m(0x17FC, 6); m(0x1810, 3u << 24); m(0x17FC, 0);
+        CHECK(s_ix.draws == 1);
+        CHECK(s_ix.had_indices);
+        CHECK(s_ix.count == 4);                       /* each vertex once */
+        CHECK(s_ix.index_count == 6);
+        for (k = 0; k < 6 && k < s_ix.index_count; k++) {
+            const Nv2aVertex *v;
+            CHECK(s_ix.idx[k] < s_ix.count);
+            if (s_ix.idx[k] >= s_ix.count)
+                continue;
+            v = &s_ix.v[s_ix.idx[k]];
+            CHECK(near_(v->x, plain[k].x) && near_(v->y, plain[k].y));
+            CHECK(v->diffuse == plain[k].diffuse);
+        }
+        nv2a_backend_register(&s_backend);
+    }
 
     if (!s_fail)
         printf("nv2a fixed-function path through a back end: ok\n");

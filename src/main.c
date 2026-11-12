@@ -56,6 +56,7 @@
 #include "host/host_window.h"
 #include "host/controls.h"
 #include "host/launch.h"
+#include "host/prof_sampler.h"
 #include "host/restart.h"
 #include "ui/settings.h"
 
@@ -481,6 +482,7 @@ int main(int argc, char **argv)
     snprintf(g_xbe_path, sizeof(g_xbe_path), "%s/default.xbe", g_game_dir);
 
     install_fault_handler();
+    thug_prof_start();                   /* THUG_PROF (Windows): src/host/prof_sampler.h */
 
     /* The GPU renderer (src/gpu): SDL video and the GL context are created
      * here, on the main thread, before the window loop takes it over; the

@@ -81,6 +81,7 @@ add_executable(thug
     src/host/host_sleep.c
     src/host/host_window.c
     src/host/launch.c
+    src/host/prof_sampler.c
     src/host/restart.c
     src/host/window_icon.c
     src/ui/settings.c

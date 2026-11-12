@@ -32,6 +32,42 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-12: performance, and what Black's recompiler does
+
+- Owner request: a deep dive into performance on both systems, borrowing
+  from the Black recomp (TGP482's XboxXBE-Recomp SDK) where it helps. Its
+  design and what carries over: NOTES decision log.
+- **A profiler on Windows:** `THUG_PROF=<start>,<seconds>` samples every
+  thread's stack about 1,000 times a second (suspend, unwind, resume) and
+  writes per-thread CPU time and self/inclusive hotspots;
+  `scripts/prof_report.py` names them (`--lines <function>` for source
+  lines). Linux has perf.
+- **Findings** (free skate, New Jersey, scripted route, headless 1080p):
+  the game's thread works about 18% of the time and spins on the executor
+  the rest; the executor's thread was 40% inside the C runtime: an uncached
+  `getenv` per draw (Windows' UCRT scans the environment under a lock) and a
+  log line every 200 draws. Then the CPU depth-buffer clear nobody reads,
+  six clock reads per pass of the ack loop, MinGW's `isfinite`, branchy
+  colour packing, and every shared vertex converted and uploaded once per
+  triangle.
+- **Fixed** (NOTES "Toolkit changes"): all of those; indexed batches to the
+  renderer (`glDrawElementsBaseVertex`, `THUG_GL_NO_INDEXED=1` the A/B).
+- **Measured** against the previous commit, alternating runs of the same
+  route: the executor's cost per index 205 to 128-133 ns, frame time per
+  1,000 draws 17.7-18.6 to 11.1-12.5 ms, mean frame rate 69-75 to 98-114 fps
+  uncapped (about 1.5x). Run-to-run noise is up to 10%. Most of the gain
+  (`getenv`, `isfinite`, the clock reads) is Windows-specific in size; the
+  rest (indexed batches, the depth clear, colour packing) applies to Linux
+  as well. Linux to be measured by the owner.
+- **Tried and dropped** (numbers in NOTES): AVX2 builds, `-O3`, a GL render
+  thread, pointer operands in the vertex-program interpreter.
+- **Checked:** the executor and vertex-program suites (the interpreter's
+  batch/scalar fuzz test), the port's test, a visible run (main menu, a
+  level at the 60 cap, DPI aware), frame dumps of levels with and without
+  indexing. New test case: indexed batches in `tests/nv2a_ffp_backend`.
+- **Next:** vertex programs and the fixed-function transform on the GPU,
+  the step Black's SDK takes (about half the executor's remaining time).
+
 ### 2026-11-12: `build.bat` installs what is missing by itself
 
 - Owner request: no `--setup` to remember on a first run. The option is

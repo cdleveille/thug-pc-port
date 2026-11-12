@@ -131,6 +131,13 @@ typedef struct {
     /* SET_CLIP_PLANE_MODE: one nibble per stage, the compare the clip-plane
      * stage (SHADER_STAGE_PROGRAM 5) applies to each coordinate. */
     uint32_t              clip_plane_mode;
+    /* For a back end that sets NV2A_BACKEND_INDEXED: the triangle list as
+     * indices into vertices[], index_count of them (a multiple of 3), and
+     * count is then the number of vertices. Each vertex a batch's triangles
+     * share is converted and handed over once instead of once per triangle.
+     * NULL for every other back end, which gets plain triangle lists. */
+    const uint32_t       *indices;
+    uint32_t              index_count;
 } Nv2aBatch;
 
 typedef struct {
@@ -140,7 +147,13 @@ typedef struct {
                   uint32_t flags, uint32_t argb, uint32_t zstencil);
     void (*draw)(const Nv2aSurface *s, const Nv2aBatch *b);
     void (*flip)(void);
+    /* NV2A_BACKEND_*: what the back end takes beyond the basic contract.
+     * Zero (as a three-member initialiser leaves it) is the basic one. */
+    uint32_t flags;
 } Nv2aBackend;
+
+/* Nv2aBackend.flags: draw() takes indexed batches (Nv2aBatch.indices). */
+#define NV2A_BACKEND_INDEXED 0x1u
 
 /* Register (or, with NULL, remove) the back end. Call before the title starts
  * submitting work; the executor must also be enabled (RECOMP_PB_EXEC). */

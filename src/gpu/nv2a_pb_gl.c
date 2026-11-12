@@ -29,12 +29,20 @@
  * its clears (gl_clear) but not its contents.
  */
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>                 /* [thug] mkdir, for captures */
 #include <time.h>
+/* [thug] MinGW's isfinite is an inline call into __fpclassifyf, with
+ * branches; the compiler's builtin is a couple of instructions and gives the
+ * same answer. gl_draw checks every vertex: the MinGW one was a fifth of it. */
+#if defined(__GNUC__) || defined(__clang__)
+#undef isfinite
+#define isfinite(x) __builtin_isfinite(x)
+#endif
 #if defined(_WIN32)
 #include <direct.h>                   /* [thug] _mkdir */
 #define mkdir_one(p) _mkdir(p)
@@ -2510,6 +2518,19 @@ static int vert_usable(const Nv2aVertex *v)
         && isfinite(v->rhw) && fabsf(v->x) < 1e12f && fabsf(v->y) < 1e12f;
 }
 
+/* [thug] A batch's triangles, whether it comes as a plain triangle list or
+ * (this back end takes NV2A_BACKEND_INDEXED) as vertices and indices. */
+static uint32_t tri_count(const Nv2aBatch *b)
+{
+    return (b->indices ? b->index_count : b->count) / 3u;
+}
+
+static const Nv2aVertex *tri_vert(const Nv2aBatch *b, uint32_t t, int k)
+{
+    uint32_t i = t * 3u + (uint32_t)k;
+    return &b->vertices[b->indices ? b->indices[i] : i];
+}
+
 /* RECOMP_GL_COMB=<n>: the pixel stage the title asked for, once per distinct
  * configuration, for the 2D batches (z = 0, rhw = 1) a back end gets wrong
  * most visibly -- a menu's text. "Diffuse times stage 0" is not the combiner:
@@ -2643,10 +2664,10 @@ static int probe_report(const Nv2aSurface *s, const Nv2aBatch *b)
     if (!s_probe_force && (px <= 0 || left <= 0 || b->count < (uint32_t)minv
         || (int)s_frame < minflip))
         return 0;
-    for (i = 0; i + 2 < b->count; i += 3) {
-        const Nv2aVertex *a = &b->vertices[i];
-        const Nv2aVertex *c = &b->vertices[i + 1];
-        const Nv2aVertex *d = &b->vertices[i + 2];
+    for (i = 0; i + 2 < tri_count(b) * 3u; i += 3) {
+        const Nv2aVertex *a = tri_vert(b, i / 3u, 0);
+        const Nv2aVertex *c = tri_vert(b, i / 3u, 1);
+        const Nv2aVertex *d = tri_vert(b, i / 3u, 2);
         float x = (float)px, y = (float)py;   /* [thug] surface pixels */
         float d1, d2, d3;
         int neg, pos;
@@ -2728,9 +2749,9 @@ static int probe_report(const Nv2aSurface *s, const Nv2aBatch *b)
         {
             /* Winding census: signed area in surface pixels (y down). */
             uint32_t q, npos = 0, nneg = 0;
-            for (q = 0; q + 2 < b->count; q += 3) {
-                const Nv2aVertex *p0 = &b->vertices[q], *p1 = &b->vertices[q + 1],
-                                 *p2 = &b->vertices[q + 2];
+            for (q = 0; q < tri_count(b); q++) {
+                const Nv2aVertex *p0 = tri_vert(b, q, 0), *p1 = tri_vert(b, q, 1),
+                                 *p2 = tri_vert(b, q, 2);
                 float ar = (p1->x - p0->x) * (p2->y - p0->y)
                          - (p1->y - p0->y) * (p2->x - p0->x);
                 if (ar > 0.0f) npos++; else if (ar < 0.0f) nneg++;
@@ -2809,10 +2830,10 @@ static int probe_hit(const Nv2aSurface *s, const Nv2aBatch *b)
     }
     if (px <= 0 || !b || !b->count)
         return 0;
-    for (i = 0; i + 2 < b->count; i += 3) {
-        const Nv2aVertex *a = &b->vertices[i];
-        const Nv2aVertex *c = &b->vertices[i + 1];
-        const Nv2aVertex *d = &b->vertices[i + 2];
+    for (i = 0; i < tri_count(b); i++) {
+        const Nv2aVertex *a = tri_vert(b, i, 0);
+        const Nv2aVertex *c = tri_vert(b, i, 1);
+        const Nv2aVertex *d = tri_vert(b, i, 2);
         float x = (float)px, y = (float)py;   /* [thug] surface pixels */
         float d1, d2, d3;
         int neg, pos;
@@ -2903,6 +2924,45 @@ static int is_trail_composite(const Nv2aBatch *b, const GlTarget *t)
 /* The glitch capture, defined with the frame dumps below. */
 static void capture_draw(const Nv2aSurface *s, const Nv2aBatch *b, const GlTarget *t);
 
+/* Every stage the title programmed, then the pixel stage itself, just before
+ * the draw call. A stage with nothing to bind gets a white texel, which is
+ * what the CPU rasteriser's sampler returns when it cannot read one. */
+static void draw_bind_stages(const Nv2aBatch *b)
+{
+    int i, up = ui_up_factor(b);
+
+    for (i = 0; i < 4; i++) {
+        s_stage_ok[i] = stage_bind(i, b->textures[i], s_frame, i == 0 ? up : 0);
+        if (!s_stage_ok[i])
+            bind_unit(i, s_white, 0);
+    }
+    /* [thug] Each stage's coordinate scale, as stage_bind worked it out,
+     * sent only when it changed. */
+    {
+        static GLfloat last[4][2] = { { -1, -1 } };
+        if (memcmp(last, s_stage_sc, sizeof last) != 0) {
+            glUniform2fv(u_texscale, 4, &s_stage_sc[0][0]);
+            memcpy(last, s_stage_sc, sizeof last);
+        }
+    }
+    rc_upload(b, &b->vertices[0]);
+}
+
+/* After a draw call: the counters, the probe's after-pixel, dirty marks. */
+static void draw_done(const Nv2aSurface *s, GlTarget *t, uint32_t tris, int probe_drew)
+{
+    s_cur_draws++;
+    s_cur_tris += tris;
+    s_st.draws++;
+    s_st.tris += tris;
+    if (probe_drew)
+        probe_pixel("post", s);
+    s_frame_dirty = 1;
+    t->ms_dirty = 1;
+    if (s_a2c_on)
+        s_st.a2c++;
+}
+
 static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
 {
     GlTarget *t;
@@ -2970,7 +3030,81 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     if (probe_drew)
         probe_pixel("pre", s);
 
-    need = b->count;
+    /* [thug] An indexed batch (NV2A_BACKEND_INDEXED) into the mapped ring:
+     * each vertex once, then the triangles as indices after them, drawn with
+     * glDrawElementsBaseVertex. A triangle with an unusable corner is left
+     * out of the indices, as the list path below leaves it out. */
+    if (b->indices && s_vbo_ptr) {
+        static uint8_t *usable;
+        static uint32_t usable_cap;
+        uint32_t nv = b->count, ni = b->index_count, k;
+        int wide = nv > 0xFFFFu;
+        size_t isz = wide ? 4 : 2, pad, vbytes, ioff;
+        uint8_t *base, *idx;
+
+        if (nv > usable_cap) {
+            uint8_t *grown = (uint8_t *)realloc(usable, nv);
+            if (!grown)
+                return;
+            usable = grown;
+            usable_cap = nv;
+        }
+        for (k = 0; k < nv; k++)
+            usable[k] = (uint8_t)vert_usable(&b->vertices[k]);
+        vbytes = (size_t)nv * sizeof(GlVert);
+        base = (uint8_t *)vbo_reserve(sizeof(GlVert) - 1 + vbytes
+                                      + (((size_t)ni * isz + 3) & ~(size_t)3));
+        if (!base)
+            return;
+        /* Vertices start on a whole vertex of the ring (the base vertex is
+         * their offset over the stride); the segments are whole vertices. */
+        pad = (sizeof(GlVert) - s_vbo_head % sizeof(GlVert)) % sizeof(GlVert);
+        dstv = (GlVert *)(base + pad);
+        for (k = 0; k < nv; k++) {
+            gl_vert_fill(&dstv[k], &b->vertices[k]);
+            dstv[k].pad[0] = 0.0f;
+        }
+        idx = (uint8_t *)(dstv + nv);
+        for (k = 0, out = 0; k + 2 < ni; k += 3) {
+            uint32_t a = b->indices[k], c = b->indices[k + 1], d = b->indices[k + 2];
+            if (a >= nv || c >= nv || d >= nv || !usable[a] || !usable[c] || !usable[d]) {
+                dropped++;
+                continue;
+            }
+            if (wide) {
+                uint32_t *o = (uint32_t *)idx + out;
+                o[0] = a; o[1] = c; o[2] = d;
+            } else {
+                uint16_t *o = (uint16_t *)idx + out;
+                o[0] = (uint16_t)a; o[1] = (uint16_t)c; o[2] = (uint16_t)d;
+            }
+            out += 3;
+        }
+        if (dropped) {
+            s_dropped_tris += dropped;
+            if (s_verbose && s_dropped_tris == dropped)
+                fprintf(stderr, "[PBGL] dropping unusable triangles "
+                                "(non-finite or off-scale vertices)\n");
+        }
+        if (!out)
+            return;
+        if (!s_vao_bound) {
+            glBindVertexArray(s_vao);
+            glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+            s_vao_bound = 1;
+        }
+        s_draw_first = (GLint)((s_vbo_head + pad) / sizeof(GlVert));
+        ioff = s_vbo_head + pad + vbytes;
+        s_vbo_head = ioff + ((out * isz + 3) & ~(size_t)3);
+        draw_bind_stages(b);
+        glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)out,
+                                 wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
+                                 (const void *)(uintptr_t)ioff, s_draw_first);
+        draw_done(s, t, (uint32_t)(out / 3), probe_drew);
+        return;
+    }
+
+    need = (size_t)tri_count(b) * 3u;
     if (s_vbo_ptr) {
         /* [thug] Straight into the mapped ring. */
         dstv = (GlVert *)vbo_reserve(need * sizeof(GlVert));
@@ -2986,10 +3120,10 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
         }
         dstv = s_verts;
     }
-    for (i = 0, out = 0; i + 2 < b->count; i += 3) {
-        const Nv2aVertex *v0 = &b->vertices[i];
-        const Nv2aVertex *v1 = &b->vertices[i + 1];
-        const Nv2aVertex *v2 = &b->vertices[i + 2];
+    for (i = 0, out = 0; i < tri_count(b); i++) {
+        const Nv2aVertex *v0 = tri_vert(b, i, 0);
+        const Nv2aVertex *v1 = tri_vert(b, i, 1);
+        const Nv2aVertex *v2 = tri_vert(b, i, 2);
         GlVert *o = &dstv[out];
 
         if (!vert_usable(v0) || !vert_usable(v1) || !vert_usable(v2)) {
@@ -3043,39 +3177,9 @@ static void gl_draw(const Nv2aSurface *s, const Nv2aBatch *b)
         s_draw_first = first;
     }
 
-    /* Every stage the title programmed, then the pixel stage itself. A stage
-     * with nothing to bind gets a white texel, which is what the CPU
-     * rasteriser's sampler returns when it cannot read one. */
-    {
-        int up = ui_up_factor(b);
-        for (i = 0; i < 4; i++) {
-            s_stage_ok[i] = stage_bind(i, b->textures[i], s_frame, i == 0 ? up : 0);
-            if (!s_stage_ok[i])
-                bind_unit(i, s_white, 0);
-        }
-    }
-    /* [thug] Each stage's coordinate scale, as stage_bind worked it out,
-     * sent only when it changed. */
-    {
-        static GLfloat last[4][2] = { { -1, -1 } };
-        if (memcmp(last, s_stage_sc, sizeof last) != 0) {
-            glUniform2fv(u_texscale, 4, &s_stage_sc[0][0]);
-            memcpy(last, s_stage_sc, sizeof last);
-        }
-    }
-    rc_upload(b, &b->vertices[0]);
-
+    draw_bind_stages(b);
     glDrawArrays(GL_TRIANGLES, s_draw_first, (GLsizei)out);
-    s_cur_draws++;
-    s_cur_tris += (uint32_t)(out / 3);
-    s_st.draws++;
-    s_st.tris += (uint32_t)(out / 3);
-    if (probe_drew)
-        probe_pixel("post", s);
-    s_frame_dirty = 1;
-    t->ms_dirty = 1;
-    if (s_a2c_on)
-        s_st.a2c++;
+    draw_done(s, t, (uint32_t)(out / 3), probe_drew);
 }
 
 /* Put the frame where the rest of the runtime already looks for it: the
@@ -3995,7 +4099,9 @@ void nv2a_pb_gl_stats(uint64_t *flips, uint32_t *w, uint32_t *h)
         *h = r & 0xFFFFu;
 }
 
-static const Nv2aBackend s_backend = { gl_clear, gl_draw, gl_flip };
+/* [thug] Indexed batches: each shared vertex converted and uploaded once.
+ * THUG_GL_NO_INDEXED=1 takes plain triangle lists again (an A/B switch). */
+static Nv2aBackend s_backend = { gl_clear, gl_draw, gl_flip, NV2A_BACKEND_INDEXED };
 
 static void APIENTRY gl_debug_message(GLenum source, GLenum type, GLuint id,
                                       GLenum severity, GLsizei length,
@@ -4204,6 +4310,9 @@ int nv2a_pb_gl_init(void)
     glBindVertexArray(s_vao);
     glGenBuffers(1, &s_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    /* [thug] The ring holds an indexed batch's indices too, after its
+     * vertices; the VAO keeps it bound as the element buffer. */
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_vbo);
     /* [thug] The ring's storage, a whole number of vertices: mapped once and
      * for good with ARB_buffer_storage, else re-specified when it wraps. */
     if (epoxy_has_gl_extension("GL_ARB_buffer_storage")
@@ -4298,6 +4407,9 @@ int nv2a_pb_gl_init(void)
     }
 
     s_ready = 1;
+    e = getenv("THUG_GL_NO_INDEXED");
+    if (e && *e && *e != '0')
+        s_backend.flags &= ~NV2A_BACKEND_INDEXED;
     /* [thug] With a present_sync only when something reads the frame from
      * guest memory: otherwise the frame never leaves the GPU. */
     nv2a_backend_register_with_present_sync(&s_backend,

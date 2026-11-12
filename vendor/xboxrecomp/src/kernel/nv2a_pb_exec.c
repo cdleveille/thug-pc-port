@@ -30,6 +30,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+/* MinGW's isfinite, isinf and signbit are inline calls into __fpclassify and
+ * its kin, with branches; the compiler's builtins are a couple of
+ * instructions and give the same answers. These run per vertex. */
+#if defined(__GNUC__) || defined(__clang__)
+#undef isfinite
+#define isfinite(x) __builtin_isfinite(x)
+#undef isinf
+#define isinf(x) __builtin_isinf(x)
+#undef signbit
+#define signbit(x) __builtin_signbit(x)
+#endif
 #include "kernel.h"   /* XBOX_CONTIG_BASE / XBOX_CONTIG_SIZE */
 #include "xbox_memory_layout.h"   /* xbox_Nv2aFrameCounterFlip */
 #include "nv2a_flip_hold.h"
@@ -2493,6 +2504,23 @@ static int s_xf_no_tex;
 static Nv2aVertex *s_bverts;     /* about 5.5 MB: allocated by the first vertex */
 static uint32_t   s_bcount;
 
+/* A back end that takes indexed batches (NV2A_BACKEND_INDEXED) gets each
+ * vertex the batch's triangles share once, and the triangles as indices into
+ * them: s_bidx, s_bidx_count of them. While a transformed batch is assembled,
+ * s_bslot maps each of its s_xf entries (s_bslot_base, s_bslot_n of them) to
+ * its s_bverts slot plus one, 0 until first used; a vertex made by clipping
+ * gets a slot of its own. */
+static uint32_t *s_bidx;
+static uint32_t  s_bidx_count;
+static uint32_t *s_bslot;
+static const Nv2aVshOutput *s_bslot_base;
+static uint32_t  s_bslot_n;
+
+static int backend_indexed(void)
+{
+    return s_backend && (s_backend->flags & NV2A_BACKEND_INDEXED);
+}
+
 static Nv2aVertex *backend_slot(void)
 {
     if (!s_bverts
@@ -2533,6 +2561,78 @@ static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
     }
 }
 
+/* The s_bverts slot for one triangle corner: a vertex of the batch being
+ * assembled is converted once and its slot reused; any other (a clipped
+ * corner) gets a new one. -1 when the batch is full. */
+static int64_t backend_vertex(const Nv2aVshOutput *v)
+{
+    uint32_t k;
+
+    if (v >= s_bslot_base && v < s_bslot_base + s_bslot_n) {
+        k = (uint32_t)(v - s_bslot_base);
+        if (s_bslot[k])
+            return (int64_t)s_bslot[k] - 1;
+        if (s_bcount >= NV_BACKEND_MAX_VERTS)
+            return -1;
+        backend_from_xf(v, &s_bverts[s_bcount]);
+        s_bslot[k] = s_bcount + 1;
+        return s_bcount++;
+    }
+    if (s_bcount >= NV_BACKEND_MAX_VERTS)
+        return -1;
+    backend_from_xf(v, &s_bverts[s_bcount]);
+    return s_bcount++;
+}
+
+/* One triangle for the back end, already culled and clipped: three
+ * converted vertices for a plain back end, three indices (and whichever
+ * corners are new) for an indexed one. */
+static void backend_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+                             const Nv2aVshOutput *vc)
+{
+    int64_t ia, ib, ic;
+
+    if (!backend_indexed()) {
+        Nv2aVertex *o = backend_slot();
+        if (o) {
+            backend_from_xf(va, &o[0]);
+            backend_from_xf(vb, &o[1]);
+            backend_from_xf(vc, &o[2]);
+            s_bcount += 3;
+        }
+        return;
+    }
+    if (!backend_slot())                    /* allocates s_bverts the first time */
+        return;
+    if (!s_bidx && !(s_bidx = (uint32_t *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bidx)))
+        return;
+    if (s_bidx_count + 3 > NV_BACKEND_MAX_VERTS)
+        return;
+    ia = backend_vertex(va);
+    ib = backend_vertex(vb);
+    ic = backend_vertex(vc);
+    if (ia < 0 || ib < 0 || ic < 0)
+        return;
+    s_bidx[s_bidx_count++] = (uint32_t)ia;
+    s_bidx[s_bidx_count++] = (uint32_t)ib;
+    s_bidx[s_bidx_count++] = (uint32_t)ic;
+}
+
+/* The last three s_bverts written as one triangle, for the screen-space path,
+ * which fills its vertices itself. */
+static void backend_index_last3(void)
+{
+    if (!backend_indexed())
+        return;
+    if (!s_bidx && !(s_bidx = (uint32_t *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bidx)))
+        return;
+    if (s_bidx_count + 3 > NV_BACKEND_MAX_VERTS || s_bcount < 3)
+        return;
+    s_bidx[s_bidx_count++] = s_bcount - 3;
+    s_bidx[s_bidx_count++] = s_bcount - 2;
+    s_bidx[s_bidx_count++] = s_bcount - 1;
+}
+
 /* `textured`: the batch carried texture coordinates, so the bound texture is
  * part of it. */
 static void backend_flush(int textured)
@@ -2544,8 +2644,11 @@ static void backend_flush(int textured)
     Nv2aBatch batch;
     int i;
 
-    if (!s_bcount)
+    if (!s_bcount || (backend_indexed() && !s_bidx_count)) {
+        s_bcount = 0;
+        s_bidx_count = 0;
         return;
+    }
     {
         /* RECOMP_TRACE_TEX0=<hex>[,n]: how the first n batches whose stage 0
          * samples that texture were transformed and lit -- the record that
@@ -2680,9 +2783,14 @@ static void backend_flush(int textured)
     batch.combiner = s_gpu.rc_seen ? &s_gpu.rc : NULL;
     batch.fog_color = s_gpu.fog_color;
     batch.clip_plane_mode = s_gpu.clip_plane_mode;
+    if (backend_indexed()) {
+        batch.indices = s_bidx;
+        batch.index_count = s_bidx_count;
+    }
     s_backend->draw(&surf, &batch);
-    s_gpu.tris_drawn += s_bcount / 3;
+    s_gpu.tris_drawn += (backend_indexed() ? s_bidx_count : s_bcount) / 3;
     s_bcount = 0;
+    s_bidx_count = 0;
     note_drawn();
 }
 
@@ -2749,6 +2857,7 @@ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb)
             }
         }
         s_bcount += 3;
+        backend_index_last3();
         return;
     }
     raster_triangle(p[0], p[1], p[2], argb,
@@ -2834,9 +2943,14 @@ static uint32_t pack_color(const float c[4])
 {
     int i;
     uint32_t b[4];
+    /* Clamped with max/min (a NaN becomes 0, as the unsigned conversion of
+     * a NaN did on x86-64) and converted through int: one instruction each,
+     * where the branches and the float-to-unsigned conversion were most of
+     * backend_from_xf, which runs per vertex. */
     for (i = 0; i < 4; i++) {
-        float f = c[i] < 0.0f ? 0.0f : (c[i] > 1.0f ? 1.0f : c[i]);
-        b[i] = (uint32_t)(f * 255.0f + 0.5f);
+        float f = c[i] > 0.0f ? c[i] : 0.0f;
+        f = f < 1.0f ? f : 1.0f;
+        b[i] = (uint32_t)(int)(f * 255.0f + 0.5f);
     }
     return (b[3] << 24) | (b[0] << 16) | (b[1] << 8) | b[2];
 }
@@ -3543,7 +3657,6 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
         uint32_t bpp = surface_bpp();
         const float *pa = va->pos, *pb = vb->pos, *pc = vc->pos;
         float ar;
-        Nv2aVertex *o;
         if (bpp != 4 && bpp != 2)
             return;
         if (pa[3] <= 0.0f || pb[3] <= 0.0f || pc[3] <= 0.0f) {
@@ -3555,13 +3668,7 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
             s_gpu.xf_degenerate++;
             return;
         }
-        o = backend_slot();
-        if (o) {
-            backend_from_xf(va, &o[0]);
-            backend_from_xf(vb, &o[1]);
-            backend_from_xf(vc, &o[2]);
-            s_bcount += 3;
-        }
+        backend_triangle(va, vb, vc);
         return;
     }
     memset(&T, 0, sizeof T);
@@ -3586,13 +3693,7 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
         return;
     }
     if (backend_draws()) {                     /* a back end rasterises */
-        Nv2aVertex *o = backend_slot();
-        if (o) {
-            backend_from_xf(va, &o[0]);
-            backend_from_xf(vb, &o[1]);
-            backend_from_xf(vc, &o[2]);
-            s_bcount += 3;
-        }
+        backend_triangle(va, vb, vc);
         return;
     }
     for (k = 0; k < 3; k++) {
@@ -4000,7 +4101,10 @@ static uint64_t prof_ns(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
-void nv2a_pb_exec_prof_walk(uint64_t ns) { s_prof_walk += ns; }
+/* Walks (kicked segments) per profile period: how finely the title cuts a
+ * frame into segments, each of which it waits on in its kickoff. */
+static uint64_t s_prof_walks;
+void nv2a_pb_exec_prof_walk(uint64_t ns) { s_prof_walk += ns; s_prof_walks++; }
 int nv2a_pb_exec_prof_on(void)
 {
     if (s_prof < 0)
@@ -4193,6 +4297,15 @@ static void raster_batch_program(void)
 
     if (s_prof)
         t1 = prof_ns();
+    /* An indexed back end gets each of this batch's transformed vertices
+     * once, whichever triangles use it (backend_vertex). */
+    s_bslot_n = 0;
+    if (backend_draws() && backend_indexed()
+            && (s_bslot || (s_bslot = (uint32_t *)calloc(NV_MAX_INDICES, sizeof *s_bslot)))) {
+        memset(s_bslot, 0, unique * sizeof *s_bslot);
+        s_bslot_base = s_xf;
+        s_bslot_n = unique;
+    }
     switch (s_gpu.prim) {
     case NV_PRIM_TRIANGLES:
         for (i = 0; i + 2 < n; i += 3)
@@ -4232,6 +4345,7 @@ static void raster_batch_program(void)
         t2 = prof_ns();
     if (backend_draws())
         backend_flush(!s_xf_no_tex);
+    s_bslot_n = 0;                    /* the slots meant this batch only */
     if (s_prof) {
         uint64_t t3 = prof_ns();
         s_prof_xf += t1 - t0;
@@ -4433,6 +4547,17 @@ static void surface_log(void)
     fflush(stderr);
 }
 
+/* RECOMP_PB_EXEC_VERBOSE, read once. getenv on every draw scanned the whole
+ * environment under the CRT's lock a thousand times a frame (Windows' UCRT:
+ * over 40% of the executor's time in a level). */
+static int exec_verbose(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("RECOMP_PB_EXEC_VERBOSE") != NULL;
+    return on;
+}
+
 static void draw_primitive(void)
 {
     float v[4];
@@ -4442,7 +4567,9 @@ static void draw_primitive(void)
         return;
     s_gpu.draws++;
     surface_log();
-    if ((s_gpu.draws % 200) == 0)
+    /* A running count, under RECOMP_PB_EXEC_VERBOSE only: a log line every
+     * 200 draws was several writes a frame from the executor's thread. */
+    if (exec_verbose() && (s_gpu.draws % 200) == 0)
         fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
     s_gpu.verts += s_gpu.idx_count;
 
@@ -4514,7 +4641,7 @@ static void draw_primitive(void)
         }
     }
 
-    if (getenv("RECOMP_PB_EXEC_VERBOSE")) {
+    if (exec_verbose()) {
         static int shown;
         if (shown++ < 6) {
             fprintf(stderr, "  [GPU] prim %u, %u indices, pos attr:"
@@ -5239,7 +5366,11 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                     param, s_gpu.color_offset, s_gpu.clip_w, s_gpu.clip_h,
                     s_gpu.clear_color, 10);
         clear_surface(param);
-        if (param & 0x01)                         /* Z */
+        /* The CPU rasteriser's depth buffer; a back end that draws keeps its
+         * own (clear_surface handed it the clear), and this one is never read
+         * then. Clearing it anyway was 1280x1024 floats per clear: 6% of the
+         * executor's time in a level. */
+        if ((param & 0x01) && !backend_draws())   /* Z */
             zbuf_clear();
         break;
 
@@ -5428,7 +5559,7 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                         " %.0f batches, %.0f indices, %.0f transformed"
                         " (%.0f in %.0f batches of 192+) | fixed-function %.0f verts"
                         " (%.0f lit) in %.2f ms | program %.0f verts: gather %.2f ms,"
-                        " interpreter %.2f ms (%d instructions)\n",
+                        " interpreter %.2f ms (%d instructions) | %.1f walks\n",
                         s_prof_walk * k, s_prof_xf * k, s_prof_asm * k,
                         s_prof_flush * k,
                         (s_prof_walk - s_prof_xf - s_prof_asm - s_prof_flush) * k,
@@ -5437,7 +5568,8 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                         s_prof_bigb / 120.0, s_prof_ffp_v / 120.0,
                         s_prof_ffp_lit / 120.0, s_prof_ffp_ns * k,
                         s_prof_prog_v / 120.0, s_prof_gather * k, s_prof_run * k,
-                        nv2a_vsh_program_length());
+                        nv2a_vsh_program_length(), s_prof_walks / 120.0);
+                s_prof_walks = 0;
                 s_prof_gather = s_prof_run = s_prof_prog_v = 0;
                 s_prof_ffp_v = s_prof_ffp_ns = s_prof_ffp_lit = 0;
                 s_prof_xf = s_prof_asm = s_prof_flush = s_prof_walk = 0;

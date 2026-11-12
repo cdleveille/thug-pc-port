@@ -56,6 +56,7 @@ shows something, the game's own code put it there.
 |---|---|
 | `src/main.c` | Host entry: loads the XBE, maps memory, boots the kernel shim, enters the guest. Crash reporter for both platforms. |
 | `src/host/host_sleep.c` | The frame cap's sleep to a deadline: `clock_nanosleep` on Linux, a high-resolution waitable timer on Windows |
+| `src/host/prof_sampler.c` | `THUG_PROF`: a sampling profiler built in, for Windows (Linux has perf); `scripts/prof_report.py` names its output |
 | `src/host/launch.c` | Start-up: the log file, and the game files (found next to the executable, unpacked on first launch with a progress window from a disc image in `game/` or beside the executable (creating `game/`), refused with a message box when absent or the wrong version) |
 | `src/host/game_data.c` | Finding the game directory, the XBE check, the XDVDFS reader and unpacking; no SDL, shared with `thug-extract` |
 | `src/host/restart.c` | The overlay's "Restart to apply changes": the process execs itself (same PID) with the arguments and environment it was started with, its descriptors closed and stdio handed back so the new run sets up its own log; on Windows `CreateProcessW` with the same, then this process ends |
@@ -149,8 +150,17 @@ record for draws that bind a given texture, `THUG_GL_TEXDUMP=<hex>` writes
 that texture's decode as PPM (in the working directory), and the toolkit's
 `RECOMP_TRACE_TEX0=<hex>` shows how those batches were transformed and lit.
 `RECOMP_EXEC_PROFILE=1` prints where the executor's time goes per frame
-(transform, assembly, back end, decode), the measure to optimise against: the
-title waits on the executor every frame, so its time is the frame time.
+(transform, assembly, back end, decode) and how many segments the title
+kicked, the measure to optimise against: the title waits on the executor
+every frame, so its time is the frame time. **Profiling on Windows:**
+`THUG_PROF=<start s>,<seconds>` (with `THUG_PROF_OUT=<file>`) samples every
+thread's stack and writes CPU time and hotspots per thread;
+`python3 scripts/prof_report.py <file> build/bin/thug.exe [--thread <tid>]
+[--lines <function>]` names them (from a CLANG64 shell, for `llvm-nm`). On
+Linux, `perf record -g -p <pid>`. Compare builds in alternating runs of the
+same scripted route: run-to-run noise is up to 10%.
+`THUG_GL_NO_INDEXED=1` sends the renderer plain triangle lists instead of
+indexed batches (A/B).
 **A glitch the player saw:** F10 in game captures the next two frames: every
 draw as a `[CAPTURE]` line (target; each stage's texture, swizzled, linear or
 DXT, and whether it is a render target; the stage modes) followed by the
