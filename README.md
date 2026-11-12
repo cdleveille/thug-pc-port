@@ -22,14 +22,13 @@ build/bin/thug       # play
 On Windows, from any shell (cmd, PowerShell):
 
 ```
-scripts\build.bat --setup    # the first time: installs the toolchain, then builds
-scripts\build.bat            # after that: rebuild whatever is out of date
-build\bin\thug.exe           # play
+scripts\build.bat     # installs the toolchain if missing, then rebuilds whatever is out of date
+build\bin\thug.exe    # play
 ```
 
 ## Running the game
 
-Run `thug`. It looks for its files in a `game/` folder next to it (or in the
+Run `thug`. It looks for the extracted game files in a `game/` folder next to it (or in the
 tree above it, so `build/bin/thug` finds the repository's `game/`):
 
 - **Only the disc image** (a Redump dump or a trimmed XISO, `.iso`), either
@@ -115,9 +114,9 @@ The Windows build's state and its open items are in
   game's files go in `game/`, which git ignores.
   - Supported `default.xbe`: SHA-1 `2951de954c96a8b962ba1cde34548fa82ae668d7`
 - **Windows 10 or 11** (x64) with [MSYS2](https://www.msys2.org/) and its
-  CLANG64 packages. `scripts\build.bat --setup` installs both (MSYS2 through
-  winget, if it is not in `C:\msys64` or `%MSYS2_ROOT%`), or by hand in an
-  MSYS2 shell:
+  CLANG64 packages. `scripts\build.bat` installs whichever is missing when it
+  runs (MSYS2 through winget, if it is not in `C:\msys64` or
+  `%MSYS2_ROOT%`), or by hand in an MSYS2 shell:
 
   ```
   pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,libepoxy,python,python-capstone,gdb}
@@ -150,9 +149,9 @@ build/bin/thug
 
 On Windows, `scripts\build.bat` does the same from any shell: it runs
 `scripts/build.sh` in MSYS2's CLANG64 environment, so no MSYS2 shell needs
-opening. It takes the same `--regen` and `--release`, and `--setup` installs
-or updates the toolchain first. The result is `build\bin\thug.exe`, which
-runs from anywhere.
+opening. It takes the same `--regen` and `--release`, and installs whatever
+part of the toolchain is missing before it builds. The result is
+`build\bin\thug.exe`, which runs from anywhere.
 
 Building needs the unpacked `default.xbe` (it is lifted to C), so
 `scripts/build.sh` unpacks the image itself the first time, with
@@ -179,5 +178,6 @@ build/bin/thug
 - [thug-decomp](https://github.com/andrewnakas/thug-decomp), used as a
   reference for the shared Neversoft codebase
 
-Tony Hawk's Underground is © Activision and Neversoft. This is an unofficial
-fan project, not affiliated with or endorsed by either.
+Tony Hawk's Underground is property of © Activision and Neversoft. This is an 
+unofficial fan project, not affiliated with or endorsed by either. No game assets
+are included in this repository.

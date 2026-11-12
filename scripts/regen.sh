@@ -38,7 +38,7 @@ if [[ ! -f "$XBE" ]]; then
 fi
 if ! python3 -c 'import capstone' 2>/dev/null; then
   echo "error: Python module 'capstone' is missing (Arch: pacman -S python-capstone;" \
-       "Windows: scripts\\build.bat --setup)." >&2
+       "Windows: scripts\\build.bat installs it)." >&2
   exit 1
 fi
 

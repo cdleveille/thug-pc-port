@@ -123,7 +123,8 @@ Facts about the binary and the decisions made around it. Keep this current.
     and SDL3.dll is loaded at run time rather than imported (the DLL copy
     knows that pair).
   - `scripts\build.bat` builds from any Windows shell by running
-    `scripts/build.sh` in CLANG64; `--setup` installs the toolchain. The
+    `scripts/build.sh` in CLANG64, and installs MSYS2 and the build
+    packages itself when they are missing (no option to remember). The
     owner does not want to switch shells to build.
   - The frame cap sleeps on a high-resolution waitable timer
     (`src/host/host_sleep.c`): winpthreads' `clock_nanosleep` rounds to the

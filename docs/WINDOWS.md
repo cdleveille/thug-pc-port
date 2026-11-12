@@ -66,13 +66,21 @@ VS Code terminal: it finds MSYS2 (`%MSYS2_ROOT%`, else `C:\msys64`), sets
 `MSYSTEM=CLANG64` and runs `scripts/build.sh` in MSYS2's bash, passing
 `--regen` and `--release` on. CLANG64's login profile puts `/clang64/bin`
 first and drops the rest of the Windows PATH, so no other cmake or Python on
-the machine is picked up. `--setup` first installs MSYS2 through winget if it
-is missing (only when `MSYS2_ROOT` is unset), then `pacman -Syu` (twice: the
-first run may stop after updating pacman itself) and
-`pacman -S --needed` of the packages below. Without `--setup` it checks
-that the main tools are there and says to run it if not.
+the machine is picked up. Before building it installs whatever is missing,
+so a fresh machine needs nothing but the repository and the disc image:
+- no MSYS2: `winget install MSYS2.MSYS2` (only when `MSYS2_ROOT` is unset;
+  without winget it says where to get MSYS2);
+- any package the build needs not installed (`pacman -T`, about a second and
+  a half on each run): `pacman -Syu` (twice: the first run may stop after
+  updating pacman itself), then `pacman -S --needed` of the packages below.
+  The check asks for `SDL2`, which sdl2-compat provides, so either counts;
+  gdb is installed with the rest but not checked.
 
-The packages (what `--setup` installs; by hand, in any MSYS2 shell):
+It never updates an installed toolchain by itself; `pacman -Syu` in an
+MSYS2 shell does that. A DLL that an update replaced reaches `build\bin` at
+the next link of `thug.exe`; the copy there keeps working meanwhile.
+
+The packages (what it installs; by hand, in any MSYS2 shell):
 
 ```
 pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,libepoxy,python,python-capstone,gdb}
@@ -98,7 +106,7 @@ console one).
 | Where | Now |
 |---|---|
 | `CMakeLists.txt` | SDL2, epoxy and ImGui on every platform; `SDL_MAIN_HANDLED`; 8 MB stack reserve for every thread (as Linux's default; the toolkit starts title threads with CreateThread's default); `-mwindows`; the DLL copy |
-| `scripts\build.bat` | The build from any Windows shell, and `--setup` for the toolchain (above) |
+| `scripts\build.bat` | The build from any Windows shell, installing the toolchain when it is missing (above) |
 | `src/gpu/nv2a_pb_gl.c` | The stub is gone. `_mkdir`, `localtime_s`; captures in the state folder from `thug_launch_state_dir`; the NVIDIA/Mesa threading variables stay Linux-only |
 | Frame cap | `src/host/host_sleep.c`: a high-resolution waitable timer on Windows (measured: 60.0 fps at a 60 cap) |
 | `src/host/host_window.c` | Built on Windows; `getrlimit` is POSIX-only (the guest thread asks for 64 MB itself); closing the window ends with `TerminateProcess` |

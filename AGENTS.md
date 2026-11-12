@@ -68,7 +68,7 @@ shows something, the game's own code put it there.
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
-| `scripts/build.bat` | Windows: `scripts/build.sh` from any shell, run in MSYS2's CLANG64 environment; `--setup` installs the toolchain |
+| `scripts/build.bat` | Windows: `scripts/build.sh` from any shell, run in MSYS2's CLANG64 environment; installs MSYS2 and the build packages first when they are missing |
 | `scripts/copy_runtime_dlls.cmake` | Windows: copies the toolchain DLLs `thug.exe` needs next to it after each link (SDL3, which sdl2-compat loads at run time, included) |
 | `docs/` | Title notes, bring-up log, override log, Windows handoff (`WINDOWS.md`) |
 | `vendor/xboxrecomp` | The toolkit (vendored, with this port's changes) |

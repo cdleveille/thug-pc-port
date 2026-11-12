@@ -32,6 +32,21 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-12: `build.bat` installs what is missing by itself
+
+- Owner request: no `--setup` to remember on a first run. The option is
+  gone; every run asks pacman whether the build's packages are installed
+  (`pacman -T`, run directly from cmd: about 1.5 s) and, if not, updates
+  MSYS2 and installs them before building. A missing MSYS2 is installed
+  through winget as before (or the script says where to get it). An
+  installed toolchain is never updated unasked.
+- Checked from PowerShell: an up-to-date build (about 3 s in all), `--help`,
+  a wrong `MSYS2_ROOT`; and, with `python-capstone` removed by hand, a run
+  that noticed it, ran `pacman -Syu` (which also brought sdl2-compat to
+  2.32.74-5), installed only that package, and built (exit 0). The winget
+  step was not run again (MSYS2 is installed here); it is the command used
+  on 2026-11-11.
+
 ### 2026-11-11: WASD is the left stick
 
 - Owner request: W A S D drive the left stick, the arrow keys stay the
