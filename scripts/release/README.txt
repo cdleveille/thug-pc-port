@@ -46,7 +46,7 @@ keyboard drives the menus too:
   F10                 capture a graphics glitch, for a bug report
 
 The settings cover the display (aspect ratio, resolution, antialiasing,
-frame rate limit, vsync, brightness), sound and vibration.
+frame rate limit, vsync, brightness, Wayland or X11), sound and vibration.
 
 
 Where things are
@@ -67,7 +67,10 @@ If something goes wrong
 - "Permission denied": run  chmod +x thug
 - "version `GLIBC_2.xx' not found": your distribution is older than this
   release supports (glibc 2.35).
-- Window or graphics trouble on Wayland: try  SDL_VIDEODRIVER=x11 ./thug
+- Low frame rate with an NVIDIA graphics card: in the settings (F1),
+  set Display server to X11 and restart. NVIDIA's driver is faster there.
+- Window or graphics trouble on Wayland: the same setting, or
+  SDL_VIDEODRIVER=x11 ./thug
 - Game files kept somewhere else:  THUG_GAME_DIR=/path/to/them ./thug
 
 

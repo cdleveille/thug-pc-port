@@ -194,9 +194,27 @@ Facts about the binary and the decisions made around it. Keep this current.
   `THUG_GL_NO_DRIVER_THREAD=1` still turns both off. With libepoxy gone
   (next entry) the variable still cannot go on under Wayland with that
   driver: forced on, the executor's thread fails `eglMakeCurrent` ("error
-  EGL_SUCCESS") and nothing draws. The owner's RTX 4080 (also KDE Wayland,
-  a newer driver) ran with it, unmeasured; there `SDL_VIDEODRIVER=x11` or
-  setting it explicitly (an explicit setting wins) brings it back.
+  EGL_SUCCESS") and nothing draws. On the owner's RTX 4080 (driver 620,
+  KDE Wayland) the variable does nothing under EGL: no driver thread starts
+  (13 threads with it or without; 15 under X11 with it). Measured there
+  (2026-11-13, New Jersey free skate paused at the spawn, about 530
+  batches, 1080p, 4x MSAA, uncapped, two alternating rounds, visible
+  window): the back end costs 2.0-2.4 us a batch on Wayland, 1.7-1.9 under
+  XWayland without the driver thread and 1.2-1.4 with it; frames 5.9-6.5 ms
+  on Wayland, 5.3-6.1 under XWayland with the thread (7-12% more fps). The
+  back end is about a fifth of the executor's walk in that view and up to a
+  third in the heaviest, so the driver thread is worth 10-15% at most; the
+  rest of the frame is the executor's software vertex work.
+  `SDL_VIDEODRIVER=x11` turns it on, and so does the overlay's "Display
+  server" (owner's call, 2026-11-13: Linux only, Wayland by default;
+  `use_x11` in the file, `THUG_X11`; it changes the video driver hint to
+  `x11,wayland` and applies after a restart). On the owner's 4K desktop at
+  175% KWin runs XWayland at the display's scale (`kwinrc` `[Xwayland]
+  Scale=1.75`, KDE's "Apply scaling themselves"), so an X11 window is drawn
+  at full resolution: sharp, though it opens smaller (2560x1440 real
+  pixels), since the saved window size is in X11's real pixels there. With
+  KDE's other choice, "Scaled by the system", X11 windows are upscaled and
+  softer.
 - **2026-11-13: One self-contained Linux executable** (owner's request: copy
   `thug` to another PC and run it). `ldd build/bin/thug` now lists only libc
   and libm (74 MB, RelWithDebInfo); checked on the GTX 1080 Ti PC: native

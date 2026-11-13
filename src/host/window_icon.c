@@ -4,6 +4,8 @@
  */
 #include "window_icon.h"
 
+#include <stdlib.h>
+
 #if defined(_WIN32)
 #include <windows.h>
 
@@ -36,8 +38,16 @@ void thug_window_hints(void)
     SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "thug-pc-port");
     SDL_SetHint("SDL_VIDEO_X11_WMCLASS", "thug-pc-port");
 #if defined(__linux__)
-    /* SDL2 itself tries X11 first; SDL_VIDEODRIVER still overrides this. */
-    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+    {
+        /* Wayland first (SDL2 itself tries X11 first), unless the player
+         * chose X11 (THUG_X11, exported from the settings file before this
+         * runs): NVIDIA's threaded optimisations only work there
+         * (nv2a_pb_gl_driver_thread). Either falls back to the other, and
+         * SDL_VIDEODRIVER still overrides both. */
+        const char *x11 = getenv("THUG_X11");
+        SDL_SetHint(SDL_HINT_VIDEODRIVER,
+                    x11 && atoi(x11) != 0 ? "x11,wayland" : "wayland,x11");
+    }
 #endif
 #if defined(_WIN32)
     /* A scaled desktop (a 4K display at 150%) would otherwise get a

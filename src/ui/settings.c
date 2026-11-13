@@ -40,6 +40,7 @@
     0,      /* mute_unfocused */                                    \
     100,    /* rumble */                                            \
     1,      /* ui_upscale: smooth text and icons */                 \
+    0,      /* x11: Wayland first (Linux) */                        \
     0, 0,   /* window size: the built-in default */                 \
     THUG_WINDOW_POS_UNSET, THUG_WINDOW_POS_UNSET,                   \
     0,      /* window_maximized */                                  \
@@ -176,6 +177,9 @@ static const Item k_items[] = {
     { "mute_in_background", "THUG_MUTE_UNFOCUSED", 0, &g_thug_settings.mute_unfocused },
     { "vibration",        "THUG_RUMBLE",        0, &g_thug_settings.rumble },
     { "smooth_text_and_icons", "THUG_UI_UPSCALE", 0, &g_thug_settings.ui_upscale },
+#if defined(__linux__)
+    { "use_x11",          "THUG_X11",           0, &g_thug_settings.x11 },
+#endif
     { "window_width",     "THUG_WINDOW_W",      0, &g_thug_settings.window_w },
     { "window_height",    "THUG_WINDOW_H",      0, &g_thug_settings.window_h },
     { "window_x",         "THUG_WINDOW_X",      0, &g_thug_settings.window_x },

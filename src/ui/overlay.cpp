@@ -41,12 +41,31 @@ static volatile float   s_mouse_sx = 1.0f, s_mouse_sy = 1.0f;
 static volatile int     s_save_pending;
 static volatile int     s_restart_request;  /* "Restart to apply changes" chosen */
 static float            s_aspect_at_boot;   /* the game set its layout from this */
+static int              s_x11_at_boot;      /* SDL picked its video driver from this */
 
-/* A change that only start-up applies: the game picks its 4:3 or widescreen
- * menu and HUD layout as it boots (16:10 and 16:9 share one). */
-static bool restart_pending(void)
+/* The aspect needs a restart: the game picks its 4:3 or widescreen menu and
+ * HUD layout as it boots (16:10 and 16:9 share one). */
+static bool aspect_restart_pending(void)
 {
     return thug_aspect_is_wide(g_thug_settings.aspect) != thug_aspect_is_wide(s_aspect_at_boot);
+}
+
+/* So does the display server (Linux): SDL picks its video driver once.
+ * SDL_VIDEODRIVER, set by the player, overrides the choice, so then there
+ * is nothing to restart for. */
+static bool x11_restart_pending(void)
+{
+#if defined(__linux__)
+    const char *vd = getenv("SDL_VIDEODRIVER");
+    return (g_thug_settings.x11 != 0) != (s_x11_at_boot != 0) && !(vd && *vd);
+#else
+    return false;
+#endif
+}
+
+static bool restart_pending(void)
+{
+    return aspect_restart_pending() || x11_restart_pending();
 }
 
 /* Pad state (main thread): the controller buttons held now, one bit per
@@ -494,7 +513,7 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
         }
         /* The game picks its widescreen or standard layout at start-up;
          * switching between 16:10 and 16:9 needs nothing more. */
-        if (restart_pending()) {
+        if (aspect_restart_pending()) {
             ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
@@ -574,6 +593,43 @@ static void draw_settings(const Nv2aGlFrameInfo &fi, int dw, int dh)
         ImGui::SameLine();
         ImGui::TextDisabled("F11");
     }
+#if defined(__linux__)
+    {
+        /* Linux only: Windows has one window system. */
+        static const char *const k_names[] = { "Wayland", "X11" };
+        const char *running = SDL_GetCurrentVideoDriver();
+        const char *vd = getenv("SDL_VIDEODRIVER");
+        int x11 = S.x11 != 0;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Display server");
+        help_marker("How the game talks to your desktop. Wayland is the default. "
+                    "X11 runs the game through XWayland on a Wayland desktop. With "
+                    "NVIDIA's driver X11 is faster (about 10% more frames per "
+                    "second measured): only there can the driver do its OpenGL "
+                    "work on a thread of its own. With fractional display "
+                    "scaling, X11 can look softer if your desktop scales X11 "
+                    "programs itself. Applies after a restart; if the chosen one "
+                    "is not available, the game uses the other.");
+        ImGui::SameLine(label_w);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##dispserver", k_names[x11])) {
+            for (int i = 0; i < 2; i++)
+                if (ImGui::Selectable(k_names[i], x11 == i))
+                    S.x11 = i;
+            ImGui::EndCombo();
+        }
+        ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+        ImGui::SameLine();
+        if (vd && *vd)
+            ImGui::TextDisabled("SDL_VIDEODRIVER=%s decides instead", vd);
+        else if (x11_restart_pending())
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "applies after a restart");
+        else
+            ImGui::TextDisabled("running on %s", running && !strcmp(running, "x11") ? "X11"
+                                : running && !strcmp(running, "wayland") ? "Wayland"
+                                : running ? running : "?");
+    }
+#endif
     {
         bool v = nv2a_pb_gl_vsync() != 0;
         ImGui::AlignTextToFramePadding();
@@ -867,6 +923,7 @@ extern "C" void thug_overlay_install(SDL_Window *win)
 {
     s_lock = SDL_CreateMutex();
     s_aspect_at_boot = g_thug_settings.aspect;
+    s_x11_at_boot = g_thug_settings.x11;
     thug_overlay_window_resized(win);
     nv2a_pb_gl_set_overlay(overlay_render);
     if (getenv("THUG_OVERLAY_OPEN"))      /* testing: start with it open */

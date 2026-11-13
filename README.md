@@ -55,7 +55,10 @@ overlay:
   antialiasing (2x, 4x or 8x MSAA), smooth text and icons (the game's
   640x480-era text, icons and logos enlarged with xBR, so their outlines are
   smooth curves rather than soft staircases), brightness, fullscreen, vsync,
-  a frame rate limit, anisotropic filtering.
+  a frame rate limit, anisotropic filtering, and on Linux the display server
+  (Wayland, the default, or X11: about 10% faster with NVIDIA's driver,
+  whose threaded optimisations only work on X11; with fractional scaling it
+  can look softer, if the desktop scales X11 programs itself).
 - **Audio:** volume, and muting while the window is in the background.
 - **Controller:** vibration strength.
 - **Game:** the original 60 Hz timing, an FPS counter.
@@ -89,6 +92,7 @@ The variables below override the saved settings for one run.
 | F11 or Alt+Enter | Toggle borderless fullscreen |
 | F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` (Windows: `%LOCALAPPDATA%\thug-pc-port\captures\`) and the log, for a bug report |
 | `THUG_FULLSCREEN=1` | Start fullscreen |
+| `THUG_X11=1` | Linux: run on X11 (XWayland on a Wayland desktop) instead of Wayland. `SDL_VIDEODRIVER` overrides it |
 | `THUG_ASPECT=<ratio>` | Aspect ratio: `16:9` (default), `16:10` or `4:3`. The game's field of view follows (Hor+); switching between 4:3 and a wide ratio changes the menu and HUD layout at the next start. `THUG_WIDESCREEN=0` still means 4:3 |
 | `THUG_RES_SCALE=<x>` | Internal resolution, as a multiple of 480 lines (default 2.25: 1920x1080 at 16:9; 0 = your desktop's height) |
 | `THUG_VSYNC=0` | Don't wait for the display |
