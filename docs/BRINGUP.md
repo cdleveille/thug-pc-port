@@ -32,6 +32,54 @@ the next step. Record failures here as well as successes.
 
 ## Log
 
+### 2026-11-13: flickering signs and buildings: culling on
+
+- **Owner report:** since the performance commit, distant buildings in New
+  Jersey and the "NO PARKING ANY TIME" sign by the spawn flicker as the
+  camera moves.
+- **Not the performance commit.** Its executor changes were read hunk by
+  hunk; the indexed path hands the renderer the same vertex values as the
+  triangle-list path, and `THUG_GL_NO_INDEXED=1` changes nothing measurable.
+  Paused, the scene is stable to the pixel (only the pause menu animates):
+  the flicker needs camera motion. More frames a second make it far more
+  visible, which is likely why it was noticed then.
+- **Found** with a new dump switch, `THUG_GL_DUMP_WHILE=<file>` (every frame
+  at full resolution while the file exists): 2 s rolling away from the
+  spawn, the sign's grey back face showed through its front in 3 of the last
+  12 frames. Face culling had been off since bring-up (`RECOMP_GL_NO_CULL=1`
+  in `main.c`), so both faces of every two-sided surface were drawn at the
+  same depth and fought.
+- **Fixed:** culling on, with `RECOMP_STRIP_ALT_WINDING=1` (NOTES,
+  "Culling"). The sign is clean in all 12 frames; the street, houses, sky,
+  HUD, skater, pedestrians and the menus (skater select, session, level
+  select) draw as before. `RECOMP_GL_NO_CULL=1` is the A/B.
+- **The factory across the river** (owner, after the fix) kept flickering.
+  Ten F10 pairs showed nothing: aligned frame to frame, the factory was the
+  same in the scene surface and in the presented one, the draw lists matched
+  except objects entering at the right edge, and the window blit's bilinear
+  shrink of the 3840-wide surface was ruled out by simulation (an area
+  filter leaves the same residual). Shift+F10 was added (two seconds of
+  every frame), but the owner's screencast settled it first: frame by frame,
+  two boarded-up windows in the top row vanish for a frame, and a dotted
+  line runs along the lower trim in others. Decals losing to the wall: the
+  factory's depth is 16,773,000-16,775,000 of 16,777,215, and its decals
+  carry biases as small as 1 unit (`polyoff 1 -0.25 -1` in the captures).
+- **Cause and fix:** the vertex shader sent depth as `(2z - 1) * w` with
+  `w` in the position, and GL's divide by `w` and viewport transform gave
+  it back up to a unit off. Positions now go out with `w = 1` (the NV2A's z
+  is already in screen space), the varyings are multiplied by `1/w` and
+  divided back per fragment (GL's own perspective correction, by hand), and
+  depth arrives exactly. Measured with a standalone GL test (the game's
+  target: 3840x1080, 4x MSAA, D24S8, `LEQUAL`; a wall and window decals at
+  the factory's depths, every vertex's z with up to 1 unit of error like the
+  executor's own float arithmetic): at the game's -1-unit bias the old path
+  lost 0.01-0.2% of decal pixels at depths 6,000-15,000, the new one none;
+  at -2 both lose none; with 1.5 units of vertex error both lose a little,
+  the new one about a fifth as much. Without vertex error the old path
+  needs a bias over 0.5 units, the new one any bias at all.
+  `THUG_GL_DEPTH_VIA_W=1` is the A/B. The paused New Jersey scene draws the
+  same either way. Waiting on the owner to look at the factory.
+
 ### 2026-11-12: performance, and what Black's recompiler does
 
 - Owner request: a deep dive into performance on both systems, borrowing
@@ -742,7 +790,7 @@ the next step. Record failures here as well as successes.
   scaled by the internal resolution). Not confirmed by the owner yet. The
   presented surface never changes between frames (`THUG_GL_STATS` counts it),
   so a wrong-surface flash is ruled out.
-- **Culling** looked at and left off: see NOTES ("Culling").
+- **Culling** looked at and left off: see NOTES ("Culling"). (On since 2026-11-13.)
 
 ### 2026-11-10: GPU renderer, widescreen, unlocked frame rate
 

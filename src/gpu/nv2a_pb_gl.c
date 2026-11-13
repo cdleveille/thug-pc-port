@@ -192,19 +192,24 @@ static const char *k_vs =
     "uniform vec2 uSurf;\n"
     "uniform vec2 uOrigin;\n"
     "uniform float uInvZ;\n"
-    "out vec4 vColor;\n"
-    "out vec4 vSpec;\n"
-    "out vec4 vSt0;\n"
-    "out vec4 vSt1;\n"
-    "out vec4 vSt2;\n"
-    "out vec4 vSt3;\n"
-    "out float vFog;\n"
+    "uniform int uDepthViaW;\n"
+    /* [thug] Every attribute times 1/w, and 1/w itself: the fragment shader
+     * divides them back (perspective-correct, as GL would with w). */
+    "out vec4 pColor;\n"
+    "out vec4 pSpec;\n"
+    "out vec4 pSt0;\n"
+    "out vec4 pSt1;\n"
+    "out vec4 pSt2;\n"
+    "out vec4 pSt3;\n"
+    "out float pFog;\n"
+    "out float pRhw;\n"
     "vec4 uncol(uint c) {\n"
     "    return vec4(float((c >> 16u) & 255u), float((c >> 8u) & 255u),\n"
     "                float(c & 255u), float((c >> 24u) & 255u)) / 255.0;\n"
     "}\n"
     "void main() {\n"
-    "    float w = (aPos.w != 0.0) ? 1.0 / aPos.w : 1.0;\n"
+    "    float rhw = (aPos.w != 0.0) ? aPos.w : 1.0;\n"
+    "    float w = 1.0 / rhw;\n"
     /* [thug] No y flip: a target stores surface row 0 in GL row 0, so a
      * render target bound as a texture lines up with textures decoded from
      * guest memory (row 0 first), and only the present flips. uSurf is the
@@ -213,30 +218,55 @@ static const char *k_vs =
     "    vec2 ndc = vec2((aPos.x - uOrigin.x) / uSurf.x * 2.0 - 1.0,\n"
     "                    (aPos.y - uOrigin.y) / uSurf.y * 2.0 - 1.0);\n"
     "    float z = clamp(aPos.z * uInvZ, 0.0, 1.0);\n"
-    /* Carry the title's own w in gl_Position.w so GL's perspective-correct
-     * interpolation weights the varyings the way the CPU rasteriser's
-     * 1/w interpolation does. [thug] Depth goes to NDC as 2z - 1, so window
-     * depth is the title's z itself: the whole buffer's precision, the same
-     * units the clears use, and a polygon-offset unit that is one of the
-     * title's (z alone used only half the range and doubled the bias). */
-    "    gl_Position = vec4(ndc * w, (z * 2.0 - 1.0) * w, w);\n"
-    "    vColor = uncol(aCol.x);\n"
-    "    vSpec  = uncol(aCol.y);\n"
-    "    vSt0 = aSt0; vSt1 = aSt1; vSt2 = aSt2; vSt3 = aSt3;\n"
-    "    vFog = aFog;\n"
+    /* [thug] Depth goes to NDC as 2z - 1, so window depth is the title's z
+     * itself: the whole buffer's precision, the same units the clears use,
+     * and a polygon-offset unit that is one of the title's (z alone used
+     * only half the range and doubled the bias).
+     * The position goes out with w = 1, so that depth arrives exactly: the
+     * NV2A's z is already in screen space, and carried as (2z - 1) * w it
+     * came back from GL's divide by w and viewport transform a unit or two
+     * off. Far away (THUG's distant buildings sit in the last 0.02% of the
+     * range) that is as much as the depth bias the title gives its decals,
+     * which then lost to the wall behind them in some frames and not others:
+     * boarded windows and trim on the factory across New Jersey's river
+     * flickered. The varyings keep their perspective correction by hand:
+     * each is sent times 1/w, with 1/w, and divided back per fragment, which
+     * is what GL's own perspective-correct interpolation computes.
+     * THUG_GL_DEPTH_VIA_W=1 carries w in the position as before (A/B). */
+    "    float k = 1.0;\n"
+    "    if (uDepthViaW != 0) {\n"
+    "        gl_Position = vec4(ndc * w, (z * 2.0 - 1.0) * w, w);\n"
+    "    } else {\n"
+    "        gl_Position = vec4(ndc, z * 2.0 - 1.0, 1.0);\n"
+    "        k = rhw;\n"
+    "    }\n"
+    "    pColor = uncol(aCol.x) * k;\n"
+    "    pSpec  = uncol(aCol.y) * k;\n"
+    "    pSt0 = aSt0 * k; pSt1 = aSt1 * k; pSt2 = aSt2 * k; pSt3 = aSt3 * k;\n"
+    "    pFog = aFog * k;\n"
+    "    pRhw = k;\n"
     "}\n";
 
 /* The combiner, and the alpha test that reads its result. Register numbers,
  * input mappings and the final combiner are nv2a_combiner.h's. */
 static const char *k_fs =
     "#version 330 core\n"
-    "in vec4 vColor;\n"
-    "in vec4 vSpec;\n"
-    "in vec4 vSt0;\n"
-    "in vec4 vSt1;\n"
-    "in vec4 vSt2;\n"
-    "in vec4 vSt3;\n"
-    "in float vFog;\n"
+    "in vec4 pColor;\n"
+    "in vec4 pSpec;\n"
+    "in vec4 pSt0;\n"
+    "in vec4 pSt1;\n"
+    "in vec4 pSt2;\n"
+    "in vec4 pSt3;\n"
+    "in float pFog;\n"
+    "in float pRhw;\n"
+    /* [thug] The varyings, perspective-corrected (k_vs): set first in main. */
+    "vec4 vColor;\n"
+    "vec4 vSpec;\n"
+    "vec4 vSt0;\n"
+    "vec4 vSt1;\n"
+    "vec4 vSt2;\n"
+    "vec4 vSt3;\n"
+    "float vFog;\n"
     "uniform sampler2D uTex;\n"        /* stage 0 */
     "uniform sampler2D uTex1;\n"
     "uniform sampler2D uTex2;\n"
@@ -436,6 +466,10 @@ static const char *k_fs =
     "    return clamp(out4, 0.0, 1.0);\n"
     "}\n"
     "void main() {\n"
+    "    float iw = 1.0 / pRhw;\n"
+    "    vColor = pColor * iw; vSpec = pSpec * iw;\n"
+    "    vSt0 = pSt0 * iw; vSt1 = pSt1 * iw; vSt2 = pSt2 * iw; vSt3 = pSt3 * iw;\n"
+    "    vFog = pFog * iw;\n"
     /* A shader that writes gl_SampleMask anywhere must write it on every
      * path, or the coverage is undefined (NVIDIA: nothing drawn). */
     "#ifdef HAVE_SAMPLE_MASK\n"
@@ -560,6 +594,10 @@ static int program_build(void)
     u_surf      = glGetUniformLocation(s_prog, "uSurf");
     u_origin    = glGetUniformLocation(s_prog, "uOrigin");
     u_incz      = glGetUniformLocation(s_prog, "uInvZ");
+    /* [thug] Set once: the program is bound for every draw from here on. */
+    glUseProgram(s_prog);
+    glUniform1i(glGetUniformLocation(s_prog, "uDepthViaW"),
+                getenv("THUG_GL_DEPTH_VIA_W") && *getenv("THUG_GL_DEPTH_VIA_W") != '0');
     u_tex       = glGetUniformLocation(s_prog, "uTex");
     u_tex1      = glGetUniformLocation(s_prog, "uTex1");
     u_tex2      = glGetUniformLocation(s_prog, "uTex2");
@@ -3306,7 +3344,22 @@ static GlTarget *present_target(void)
 
 /* [thug] RECOMP-style frame dump from the GPU: THUG_GL_DUMP=<dir> writes the
  * presented surface at its physical size as a PPM every THUG_GL_DUMP_EVERY
- * flips (default 60). Row 0 of the target is the top of the surface. */
+ * flips (default 60). Row 0 of the target is the top of the surface.
+ * THUG_GL_DUMP_WHILE=<file> dumps only while that file exists, so a run of
+ * consecutive frames (THUG_GL_DUMP_EVERY=1) can start mid-game, as
+ * RECOMP_FB_DUMP_FLIPS does for guest-memory dumps. */
+static int dump_while_on(void)
+{
+    static const char *path = (const char *)-1;
+    struct stat st;
+
+    if (path == (const char *)-1) {
+        path = getenv("THUG_GL_DUMP_WHILE");
+        if (path && !*path)
+            path = NULL;
+    }
+    return !path || stat(path, &st) == 0;
+}
 /* [thug] THUG_GL_FLICKER=<dir>: find one-frame glitches. Every presented
  * frame is read back (keep this to diagnosis runs) and compared, shrunk to
  * 64x36, with its neighbours. A frame unlike both neighbours while they are
@@ -3513,41 +3566,95 @@ static char     s_capture_dir[1024];
 
 void nv2a_pb_gl_request_capture(void) { s_capture_req = 1; }
 
-static int capture_begin(void)
+/* <state dir>/captures/<time><suffix>, created. 1 on success. */
+static int capture_dir_make(char *dir, size_t n, const char *suffix)
 {
-    char stamp[32];
+    char stamp[48];
     time_t now = time(NULL);
     struct tm tmv;
     size_t i;
 
-    if (thug_launch_state_dir(s_capture_dir, sizeof s_capture_dir))
-        strncat(s_capture_dir, "/captures", sizeof s_capture_dir - strlen(s_capture_dir) - 1);
+    if (thug_launch_state_dir(dir, n))
+        strncat(dir, "/captures", n - strlen(dir) - 1);
     else
-        snprintf(s_capture_dir, sizeof s_capture_dir, "captures");
+        snprintf(dir, n, "captures");
 #if defined(_WIN32)
     localtime_s(&tmv, &now);
 #else
     localtime_r(&now, &tmv);
 #endif
     strftime(stamp, sizeof stamp, "/%Y%m%d-%H%M%S", &tmv);
-    strncat(s_capture_dir, stamp, sizeof s_capture_dir - strlen(s_capture_dir) - 1);
-    for (i = 1; s_capture_dir[i]; i++) {               /* mkdir -p */
-        if ((s_capture_dir[i] == '/' || s_capture_dir[i] == '\\')
-                && s_capture_dir[i - 1] != ':') {      /* not a drive's root */
-            char c = s_capture_dir[i];
-            s_capture_dir[i] = 0;
-            mkdir_one(s_capture_dir);
-            s_capture_dir[i] = c;
+    strncat(stamp, suffix, sizeof stamp - strlen(stamp) - 1);
+    strncat(dir, stamp, n - strlen(dir) - 1);
+    for (i = 1; dir[i]; i++) {                         /* mkdir -p */
+        if ((dir[i] == '/' || dir[i] == '\\') && dir[i - 1] != ':') {  /* not a drive's root */
+            char c = dir[i];
+            dir[i] = 0;
+            mkdir_one(dir);
+            dir[i] = c;
         }
     }
-    if (mkdir_one(s_capture_dir) != 0 && errno != EEXIST) {
-        fprintf(stderr, "[CAPTURE] cannot create %s: %s\n", s_capture_dir, strerror(errno));
+    if (mkdir_one(dir) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[CAPTURE] cannot create %s: %s\n", dir, strerror(errno));
         return 0;
     }
+    return 1;
+}
+
+static int capture_begin(void)
+{
+    if (!capture_dir_make(s_capture_dir, sizeof s_capture_dir, ""))
+        return 0;
     fprintf(stderr, "[CAPTURE] capturing flips %u-%u into %s\n", (unsigned)s_frame,
             (unsigned)s_frame + 1, s_capture_dir);
     s_capture_draw = 0;
     return 1;
+}
+
+/* [thug] Recording (Shift+F10; nv2a_pb_gl_request_recording): every
+ * presented frame for the next THUG_GL_REC_FRAMES flips (default 120, two
+ * seconds at 60 fps), as PPM at full internal resolution, into
+ * <state dir>/captures/<time>-rec/. No draw records, so it is light enough
+ * to catch something that comes and goes over a second or two, which F10's
+ * two frames can miss. The picture is the one presented, before only the
+ * brightness pass. */
+static volatile int s_rec_req;
+static int      s_rec_left;
+static char     s_rec_dir[1024];
+
+void nv2a_pb_gl_request_recording(void) { s_rec_req = 1; }
+
+static void rec_frame(GlTarget *t)
+{
+    char path[1100];
+    if (s_rec_left <= 0 || !t)
+        return;
+    snprintf(path, sizeof path, "%s/rec%06u.ppm", s_rec_dir, (unsigned)s_frame);
+    dump_target_to(t, path);
+}
+
+static void rec_flip(void)
+{
+    static long at = -2;            /* THUG_GL_REC_AT=<flip>: for scripted runs */
+    if (at == -2) {
+        const char *e = getenv("THUG_GL_REC_AT");
+        at = e && *e ? atol(e) : -1;
+    }
+    if (at >= 0 && (long)s_frame == at)
+        s_rec_req = 1;
+    if (s_rec_left > 0) {
+        if (--s_rec_left == 0)
+            fprintf(stderr, "[CAPTURE] recording done: %s\n", s_rec_dir);
+    } else if (s_rec_req) {
+        const char *e = getenv("THUG_GL_REC_FRAMES");
+        int n = e && *e ? atoi(e) : 120;
+        s_rec_req = 0;
+        if (n > 0 && capture_dir_make(s_rec_dir, sizeof s_rec_dir, "-rec")) {
+            s_rec_left = n;
+            fprintf(stderr, "[CAPTURE] recording flips %u-%u into %s\n", (unsigned)s_frame + 1,
+                    (unsigned)s_frame + (unsigned)n, s_rec_dir);
+        }
+    }
 }
 
 static void capture_draw(const Nv2aSurface *s, const Nv2aBatch *b, const GlTarget *t)
@@ -3881,8 +3988,10 @@ static void gl_flip(void)
         uint32_t rw = (uint32_t)((float)t->ph * s_aspect + 0.5f);
         __atomic_store_n(&s_res_packed, ((rw & 0xFFFFu) << 16) | (t->ph & 0xFFFFu),
                          __ATOMIC_RELAXED);
-        if (s_dump_dir && s_dump_every && (s_frame % s_dump_every) == 0)
+        if (s_dump_dir && s_dump_every && (s_frame % s_dump_every) == 0
+                && dump_while_on())
             dump_target(t);
+        rec_frame(t);
         flicker_check(t);
         if (s_visible)
             present(t);
@@ -4009,6 +4118,7 @@ static void gl_flip(void)
         if (capture_begin())
             s_capture_left = 2;
     }
+    rec_flip();
     apply_requests();
     s_cur_draws = s_cur_tris = s_cur_fail = s_cur_uploads = 0;
     __atomic_add_fetch(&s_flip_count, 1, __ATOMIC_RELAXED);

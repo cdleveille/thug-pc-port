@@ -261,7 +261,10 @@ int thug_host_window_main(int (*guest_main)(void))
                                 && (ev.key.keysym.mod & KMOD_ALT)))
                         toggle_fullscreen(win);
                     if (ev.key.keysym.sym == SDLK_F10) {
-                        nv2a_pb_gl_request_capture();
+                        if (ev.key.keysym.mod & KMOD_SHIFT)
+                            nv2a_pb_gl_request_recording();
+                        else
+                            nv2a_pb_gl_request_capture();
                         s_capture_note_until = now_ms() + 4000;
                         update_title(win, &t_title, &flips_title);
                     }

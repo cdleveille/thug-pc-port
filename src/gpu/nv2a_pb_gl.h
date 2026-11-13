@@ -106,6 +106,8 @@ int   nv2a_pb_gl_ui_upscale(void);
 /* [thug] Glitch capture (F10): the next two frames' draws to the log and
  * their render targets as PPM under <state dir>/captures/<time>/. */
 void  nv2a_pb_gl_request_capture(void);
+/* [thug] Shift+F10: every presented frame for the next two seconds, as PPM. */
+void  nv2a_pb_gl_request_recording(void);
 
 /* Called on the executor's thread after each frame is blitted to the window
  * and before the swap, with the default framebuffer bound and its size. */

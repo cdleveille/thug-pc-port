@@ -91,6 +91,7 @@ The variables below override the saved settings for one run.
 | Arrow keys | D-pad |
 | F11 or Alt+Enter | Toggle borderless fullscreen |
 | F10 | Capture a graphics glitch: the next two frames go to `~/.local/state/thug-pc-port/captures/` (Windows: `%LOCALAPPDATA%\thug-pc-port\captures\`) and the log, for a bug report |
+| Shift+F10 | Record a glitch that comes and goes: every frame of the next two seconds to `captures/<time>-rec/` (about 1.4 GB at 1080p; the game slows while it writes) |
 | `THUG_FULLSCREEN=1` | Start fullscreen |
 | `THUG_X11=1` | Linux: run on X11 (XWayland on a Wayland desktop) instead of Wayland. `SDL_VIDEODRIVER` overrides it |
 | `THUG_ASPECT=<ratio>` | Aspect ratio: `16:9` (default), `16:10` or `4:3`. The game's field of view follows (Hor+); switching between 4:3 and a wide ratio changes the menu and HUD layout at the next start. `THUG_WIDESCREEN=0` still means 4:3 |

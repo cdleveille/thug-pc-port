@@ -44,6 +44,7 @@ keyboard drives the menus too:
   F1                  settings (on a pad: click both sticks, L3 + R3)
   F11 or Alt+Enter    fullscreen
   F10                 capture a graphics glitch, for a bug report
+  Shift+F10           record two seconds of one (about 1.4 GB)
 
 The settings cover the display (aspect ratio, resolution, antialiasing,
 frame rate limit, vsync, brightness, Wayland or X11), sound and vibration.

@@ -326,11 +326,15 @@ static void thug_set_default_env(void)
      * exit() -- on the console it never runs out, because it frees the menu
      * first. */
     set_default("RECOMP_HEAP_RECLAIM", "1");
-    /* GPU renderer: face culling off. The renderer's culling winding is wrong
-     * for THUG (every other triangle of the 3D meshes vanished); drawing both
-     * faces costs nothing measurable on a desktop GPU and the depth test hides
-     * back faces. TODO: fix the winding and turn this back off. */
-    set_default("RECOMP_GL_NO_CULL", "1");
+    /* GPU renderer: face culling as the game sets it. Every odd triangle of a
+     * strip is emitted with its first two corners swapped, so a strip's
+     * triangles all wind the same way, as on the hardware; without that,
+     * culling dropped every other triangle of the 3D meshes, which is why it
+     * was off until 2026-11-13. Off, the back of every two-sided face (a
+     * sign's grey back, a wall's inside) sat at the same depth as its front
+     * and flickered through it as the camera moved. RECOMP_GL_NO_CULL=1 turns
+     * culling off again (A/B). */
+    set_default("RECOMP_STRIP_ALT_WINDING", "1");
     /* Widescreen: the dashboard's 16:9 setting, which THUG supports natively.
      * It then sets D3DPRESENTFLAG_WIDESCREEN, widens its field of view (Hor+)
      * and lays its HUD out for 16:9, rendering anamorphic into its 640x480

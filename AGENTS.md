@@ -135,7 +135,11 @@ into.
 The GPU renderer (`src/gpu/nv2a_pb_gl.c`) has its own switches.
 `THUG_GL_DUMP=<dir>` writes the presented frame as PPM every
 `THUG_GL_DUMP_EVERY` flips; this works headless, where `RECOMP_FB_DUMP` only
-sees guest memory and needs `THUG_GL_READBACK=1`. `THUG_GL_STATS=1` prints fps,
+sees guest memory and needs `THUG_GL_READBACK=1`. `THUG_GL_DUMP_WHILE=<file>`
+dumps only while that file exists: with `THUG_GL_DUMP_EVERY=1`, a run of
+consecutive full-resolution frames from mid-game (touch the file, remove it
+a second or two later), which is how to see a flicker that needs motion.
+`THUG_GL_STATS=1` prints fps,
 draws, triangles, GPU time per frame (a timer query: the one fair measure of
 GPU cost, since fps is usually the executor's), texture traffic, MSAA
 resolves and alpha-to-coverage draws, and dropped triangles every 120 flips.
@@ -172,6 +176,12 @@ probe's full record, in the log, and every render target as PPM under
 does the same in a scripted run, and `THUG_GL_CAPTURE_ON_X8=1` starts one at
 the first alpha-blended draw that samples an alpha-less render target (THUG's
 reset transition). Captures include each target's alpha as `*_alpha.ppm`.
+Shift+F10 records instead: every presented frame for the next
+`THUG_GL_REC_FRAMES` flips (default 120) as PPM at full internal resolution
+in `captures/<time>-rec/`, no draw records (about 12 MB a frame at 1080p);
+`THUG_GL_REC_AT=<flip>` starts one in a scripted run. For something that
+comes and goes, which two frames can miss. The presented surface is THUG's
+2x-wide one (3840x1080 at 1080p); `present()` scales it to the window.
 `THUG_GL_RT_RAW_ALPHA=1` samples such targets' stored alpha instead of 1 (an
 A/B switch). The reset transition's trail is skipped on the owner's request
 (`is_trail_composite`, a `[PBGL] ... trail skipped` line each time);
@@ -189,6 +199,11 @@ internal scale, else 2x), made on a worker thread and swapped in at a later
 bind; `[PBGL] smooth text and icons:` lines log the first few. A swizzled
 texture can sit in two cache entries (the key includes a pitch register it
 only inherits), so each is magnified twice.
+Positions go to GL with `w = 1`, so the title's screen-space z reaches the
+depth buffer exactly (decal biases are 1-5 units, and distant geometry
+lives in the last 0.02% of the range); the varyings are perspective-
+corrected by hand (times `1/w` in the vertex shader, divided back per
+fragment). `THUG_GL_DEPTH_VIA_W=1` sends `w` in the position as before.
 The renderer takes the XDK's screen-space offset back out of every position
 (0.53125 on a surface without anti-aliasing, 1/32 pixel per AA factor on an
 anti-aliased one), so the title's 0 is the surface's edge at any internal
