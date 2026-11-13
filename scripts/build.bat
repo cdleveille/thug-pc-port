@@ -22,8 +22,8 @@ rem over SDL3), which MSYS2 marks as replacing the SDL2 package; the check asks
 rem for SDL2 by the name both provide, so either one counts. gdb is for
 rem debugging, installed along with the rest but not required.
 set "P=mingw-w64-clang-x86_64-"
-set "INSTALL=git %P%clang %P%cmake %P%ninja %P%pkgconf %P%sdl2-compat %P%libepoxy %P%python %P%python-capstone %P%gdb"
-set "NEED=git %P%clang %P%cmake %P%ninja %P%pkgconf %P%SDL2 %P%libepoxy %P%python %P%python-capstone"
+set "INSTALL=git %P%clang %P%cmake %P%ninja %P%pkgconf %P%sdl2-compat %P%python %P%python-capstone %P%gdb"
+set "NEED=git %P%clang %P%cmake %P%ninja %P%pkgconf %P%SDL2 %P%python %P%python-capstone"
 
 set "ARGS="
 :parse

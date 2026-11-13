@@ -448,13 +448,12 @@ int main(int argc, char **argv)
     thug_launch_log_setup();
 
 #if !defined(_WIN32)
-    /* The GL driver's own worker thread (see nv2a_pb_gl_init), asked for
-     * before anything can load the driver: the first-launch progress window
-     * may, through SDL. */
-    if (!getenv("THUG_GL_NO_DRIVER_THREAD")) {
-        setenv("__GL_THREADED_OPTIMIZATIONS", "1", 0);
+    /* Mesa's own worker thread (see nv2a_pb_gl_init), asked for before
+     * anything can load the driver: the first-launch progress window may,
+     * through SDL. NVIDIA's waits for SDL's choice of video driver
+     * (nv2a_pb_gl_driver_thread). */
+    if (!getenv("THUG_GL_NO_DRIVER_THREAD"))
         setenv("mesa_glthread", "true", 0);
-    }
 #endif
 
     /* The player's saved settings (F1 overlay), exported as the THUG_*

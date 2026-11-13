@@ -38,6 +38,10 @@
  * carries on as before). Safe to call on a host without a display. */
 int nv2a_pb_gl_init(void);
 
+/* [thug] Once SDL video has picked its driver, before its first window:
+ * NVIDIA's threaded optimisations, with X11 only (Linux). */
+void nv2a_pb_gl_driver_thread(void);
+
 /* [thug] Direct presentation (Linux and Windows). The back end draws every surface at an
  * internal resolution and blits the flipped one straight to its own window;
  * nothing goes back to guest memory unless asked.

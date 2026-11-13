@@ -8,6 +8,7 @@
 #include "launch.h"
 #include "game_data.h"
 #include "window_icon.h"
+#include "gpu/nv2a_pb_gl.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -458,6 +459,8 @@ int thug_launch_prepare(char *game_dir, size_t n)
         SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
         thug_window_hints();
         ui.video = SDL_WasInit(SDL_INIT_VIDEO) || SDL_InitSubSystem(SDL_INIT_VIDEO) == 0;
+        if (ui.video)
+            nv2a_pb_gl_driver_thread();   /* before the progress window can load GL */
     }
 
     if (!found && !gd.has_xbe && !gd.iso[0]) {

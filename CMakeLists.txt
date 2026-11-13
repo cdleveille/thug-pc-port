@@ -28,6 +28,37 @@ if(NOT EXISTS "${XBOXRECOMP_DIR}/CMakeLists.txt")
         "repository (vendor/xboxrecomp); is the checkout complete?")
 endif()
 
+# ── SDL ───────────────────────────────────────────────────────────
+
+# Linux: SDL 2.32 (vendor/SDL) linked into the executable, so a player needs
+# no SDL package. SDL still loads X11, Wayland and the sound libraries at run
+# time. Windows keeps the toolchain's DLLs (docs/NOTES.md, "Decisions").
+if(NOT WIN32)
+    option(THUG_BUNDLED_SDL "Link SDL2 statically from vendor/SDL" ON)
+endif()
+if(THUG_BUNDLED_SDL)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_STATIC_PIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST OFF CACHE BOOL "" FORCE)
+    set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
+    set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+    set(SDL2_DISABLE_UNINSTALL ON CACHE BOOL "" FORCE)
+    add_subdirectory(vendor/SDL ${CMAKE_BINARY_DIR}/SDL EXCLUDE_FROM_ALL)
+    # The toolkit's find_package(SDL2) calls land here, on SDL2::SDL2 (the
+    # static library), instead of on a system SDL.
+    file(WRITE "${CMAKE_BINARY_DIR}/sdl2-bundled/SDL2Config.cmake" "")
+    set(SDL2_DIR "${CMAKE_BINARY_DIR}/sdl2-bundled" CACHE PATH "" FORCE)
+endif()
+
+# THUG draws through the pushbuffer executor, never the toolkit's D3D8 layer,
+# whose POSIX back end needs libepoxy: only its headers, which other toolkit
+# code includes.
+if(NOT WIN32)
+    add_library(xbox_d3d8 INTERFACE)
+    target_include_directories(xbox_d3d8 INTERFACE "${XBOXRECOMP_DIR}/src/d3d")
+endif()
+
 # Builds the runtime libraries and provides the 'xboxrecomp' umbrella target.
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
@@ -105,20 +136,22 @@ target_include_directories(thug PRIVATE
 set_source_files_properties(src/host/controls.c PROPERTIES
     INCLUDE_DIRECTORIES "${XBOXRECOMP_DIR}/src")
 
-# GPU renderer: OpenGL 3.3 through SDL2 + libepoxy, on Linux and Windows
-# (MSYS2 CLANG64 provides both; docs/WINDOWS.md). The toolkit's own D3D11
-# path is not THUG's: the game renders through the pushbuffer executor.
-find_package(SDL2 REQUIRED)
-find_package(PkgConfig REQUIRED)
+# GPU renderer: OpenGL 3.3 through SDL2 and glad (vendor/glad, generated for
+# GL 3.3 core and the extensions the renderer checks for), on Linux and
+# Windows (docs/WINDOWS.md). The toolkit's own D3D11 path is not THUG's: the
+# game renders through the pushbuffer executor.
+if(NOT THUG_BUNDLED_SDL)
+    find_package(SDL2 REQUIRED)
+endif()
 find_package(Threads REQUIRED)
-pkg_check_modules(THUG_EPOXY REQUIRED epoxy)
-target_link_libraries(thug PRIVATE SDL2::SDL2 ${THUG_EPOXY_LINK_LIBRARIES} Threads::Threads)
-target_include_directories(thug PRIVATE ${THUG_EPOXY_INCLUDE_DIRS})
+add_library(thug_glad STATIC vendor/glad/src/gl.c)
+target_include_directories(thug_glad PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor/glad/include")
+target_link_libraries(thug PRIVATE SDL2::SDL2 thug_glad Threads::Threads)
 # SDL is not handed main(): main.c is an ordinary entry point everywhere.
 target_compile_definitions(thug PRIVATE SDL_MAIN_HANDLED)
 
 # The in-game settings overlay (F1): Dear ImGui (vendored), drawn
-# by the GPU renderer through epoxy.
+# by the GPU renderer through glad.
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui")
 if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
     message(FATAL_ERROR "Dear ImGui not found at ${IMGUI_DIR}. It is part "
@@ -177,7 +210,7 @@ if(WIN32)
         if(NOT THUG_WINDOWS_CONSOLE)
             target_link_options(thug PRIVATE -mwindows)
         endif()
-        # The toolchain's DLLs (SDL2, libepoxy, libc++, winpthread) beside the
+        # The toolchain's DLLs (SDL2, libc++, winpthread) beside the
         # game, so build/bin/thug.exe starts from Explorer too.
         get_filename_component(THUG_TOOLCHAIN_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
         add_custom_command(TARGET thug POST_BUILD
@@ -192,6 +225,9 @@ else()
     # -rdynamic lets backtrace_symbols() in the crash reporter name the
     # lifted function a fault happened in (sub_XXXXXXXX).
     target_link_options(thug PRIVATE -rdynamic)
+    # The C++ runtime (ImGui) inside the executable too: only glibc and the
+    # GL driver come from the system.
+    target_link_options(thug PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
 set_target_properties(thug PROPERTIES

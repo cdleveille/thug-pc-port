@@ -35,6 +35,10 @@ void thug_window_hints(void)
     SDL_SetHint("SDL_APP_ID", "thug-pc-port");
     SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "thug-pc-port");
     SDL_SetHint("SDL_VIDEO_X11_WMCLASS", "thug-pc-port");
+#if defined(__linux__)
+    /* SDL2 itself tries X11 first; SDL_VIDEODRIVER still overrides this. */
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+#endif
 #if defined(_WIN32)
     /* A scaled desktop (a 4K display at 150%) would otherwise get a
      * 2560x1440 window that Windows stretches, blurring every frame: the

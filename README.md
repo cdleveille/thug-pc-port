@@ -119,23 +119,31 @@ The Windows build's state and its open items are in
   `%MSYS2_ROOT%`), or by hand in an MSYS2 shell:
 
   ```
-  pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,libepoxy,python,python-capstone,gdb}
+  pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,python,python-capstone,gdb}
   ```
 
-  The build copies the DLLs it needs (SDL2 and SDL3, libepoxy, libc++,
+  The build copies the DLLs it needs (SDL2 and SDL3, libc++,
   winpthread) next to `thug.exe`, so the game then starts from Explorer too.
 - **Linux** x86-64 with:
   - clang or GCC
   - CMake 3.20 or newer
   - Ninja
-  - SDL2 and libepoxy
   - Python 3.10 or newer with `capstone`
 
   On Arch:
 
   ```
-  sudo pacman -S --needed git python python-capstone cmake ninja clang sdl2 libepoxy
+  sudo pacman -S --needed git python python-capstone cmake ninja clang
   ```
+
+  SDL is built from `vendor/SDL` into the game, and OpenGL is loaded through
+  `vendor/glad`, so `build/bin/thug` is one file that needs only glibc and
+  the graphics driver: copy it, with the disc image beside it, to another
+  PC. SDL's X11, Wayland and sound back ends are built when their headers
+  are installed (they are on any Arch desktop) and loaded at run time.
+  `-DTHUG_BUNDLED_SDL=OFF` links the system's SDL2 instead. The executable
+  runs on systems with the same or a newer glibc than the one it was built
+  on.
 
 ## Build
 

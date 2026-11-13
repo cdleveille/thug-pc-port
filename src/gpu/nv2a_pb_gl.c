@@ -58,10 +58,11 @@
 #include "ui/settings.h"           /* [thug] THUG_WINDOW_POS_UNSET */
 #include "../d3d/d3d8_swizzle.h"   /* [thug] swizzled vs linear formats */
 
-/* [thug] One renderer on every host: SDL2 + OpenGL 3.3 core through epoxy,
- * on Windows as on Linux (docs/WINDOWS.md). */
+/* [thug] One renderer on every host: SDL2 + OpenGL 3.3 core through glad
+ * (vendor/glad, loaded from SDL_GL_GetProcAddress), on Windows as on Linux
+ * (docs/WINDOWS.md). */
+#include <glad/gl.h>
 #include <SDL.h>
-#include <epoxy/gl.h>
 #include <pthread.h>
 
 #include "xbr.h"                       /* [thug] smooth text and icons */
@@ -520,8 +521,7 @@ static int program_build(void)
     /* [thug] With GL_ARB_sample_shading the fragment shader writes its own
      * coverage (gl_SampleMask) for alpha-tested draws under multisampling:
      * the extension goes in after the #version line. */
-    s_sample_mask_ok = epoxy_has_gl_extension("GL_ARB_sample_shading")
-                       && !getenv("THUG_GL_NO_A2C");
+    s_sample_mask_ok = GLAD_GL_ARB_sample_shading && !getenv("THUG_GL_NO_A2C");
     if (s_sample_mask_ok) {
         const char *nl = strchr(k_fs, '\n');
         static const char ext[] = "#extension GL_ARB_sample_shading : require\n"
@@ -646,10 +646,9 @@ static size_t  s_verts_cap;
 
 /* The context was created on the main thread; every call below arrives on
  * the executor's poll thread, so each entry point makes it current there
- * first. epoxy resolves its entry points on first use from whatever context
- * is current, and aborts outright if there is none -- so a failed
- * MakeCurrent must skip the work, not fall through into GL. Failures are
- * reported once: the reason matters, the repetition does not. */
+ * first. A GL call with no context current is undefined behaviour, so a
+ * failed MakeCurrent must skip the work, not fall through into GL. Failures
+ * are reported once: the reason matters, the repetition does not. */
 static int gl_ready(void)
 {
     static int complained;
@@ -4103,7 +4102,7 @@ void nv2a_pb_gl_stats(uint64_t *flips, uint32_t *w, uint32_t *h)
  * THUG_GL_NO_INDEXED=1 takes plain triangle lists again (an A/B switch). */
 static Nv2aBackend s_backend = { gl_clear, gl_draw, gl_flip, NV2A_BACKEND_INDEXED };
 
-static void APIENTRY gl_debug_message(GLenum source, GLenum type, GLuint id,
+static void GLAD_API_PTR gl_debug_message(GLenum source, GLenum type, GLuint id,
                                       GLenum severity, GLsizei length,
                                       const GLchar *msg, const void *user)
 {
@@ -4117,6 +4116,16 @@ static void APIENTRY gl_debug_message(GLenum source, GLenum type, GLuint id,
 }
 
 /* ── Bring-up ───────────────────────────────────────────────────────────── */
+
+void nv2a_pb_gl_driver_thread(void)
+{
+#if !defined(_WIN32)
+    /* X11 only: NVIDIA's EGL (Wayland) then fails eglMakeCurrent off the main thread. */
+    const char *vd = SDL_GetCurrentVideoDriver();
+    if (!getenv("THUG_GL_NO_DRIVER_THREAD") && vd && strcmp(vd, "x11") == 0)
+        setenv("__GL_THREADED_OPTIMIZATIONS", "1", 0);
+#endif
+}
 
 int nv2a_pb_gl_init(void)
 {
@@ -4175,15 +4184,14 @@ int nv2a_pb_gl_init(void)
      * optimisations; Mesa's glthread). Explicit settings win. Linux only:
      * on Windows the driver's control panel owns that setting. */
 #if !defined(_WIN32)
-    if (!getenv("THUG_GL_NO_DRIVER_THREAD")) {
-        setenv("__GL_THREADED_OPTIMIZATIONS", "1", 0);
+    if (!getenv("THUG_GL_NO_DRIVER_THREAD"))
         setenv("mesa_glthread", "true", 0);
-    }
 #endif
     if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "[PBGL] SDL_Init: %s\n", SDL_GetError());
         return 0;
     }
+    nv2a_pb_gl_driver_thread();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
@@ -4301,6 +4309,10 @@ int nv2a_pb_gl_init(void)
         return 0;
     }
     SDL_GL_MakeCurrent(s_win, s_ctx);
+    if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
+        fprintf(stderr, "[PBGL] OpenGL 3.3 entry points not found\n");
+        return 0;
+    }
     nv2a_pb_gl_drawable_changed();
 
     if (!program_build())
@@ -4315,8 +4327,7 @@ int nv2a_pb_gl_init(void)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_vbo);
     /* [thug] The ring's storage, a whole number of vertices: mapped once and
      * for good with ARB_buffer_storage, else re-specified when it wraps. */
-    if (epoxy_has_gl_extension("GL_ARB_buffer_storage")
-            && !getenv("THUG_GL_NO_PERSISTENT")) {
+    if (GLAD_GL_ARB_buffer_storage && !getenv("THUG_GL_NO_PERSISTENT")) {
         GLbitfield fl = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
         glBufferStorage(GL_ARRAY_BUFFER, VBO_RING_BYTES, NULL, fl);
         s_vbo_ptr = (uint8_t *)glMapBufferRange(GL_ARRAY_BUFFER, 0, VBO_RING_BYTES, fl);
@@ -4365,7 +4376,7 @@ int nv2a_pb_gl_init(void)
     /* [thug] THUG_GL_DEBUG=1: the driver's error and warning messages
      * (KHR_debug), synchronously, so a breakpoint on gl_debug_message
      * lands at the offending call. Slow; diagnosis only. */
-    if (getenv("THUG_GL_DEBUG") && epoxy_has_gl_extension("GL_KHR_debug")) {
+    if (getenv("THUG_GL_DEBUG") && GLAD_GL_KHR_debug) {
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(gl_debug_message, NULL);
@@ -4392,8 +4403,7 @@ int nv2a_pb_gl_init(void)
 
     /* [thug] Anisotropic filtering for mip-filtered textures: core in 4.6,
      * an extension everywhere that matters before it. */
-    if (epoxy_has_gl_extension("GL_EXT_texture_filter_anisotropic")
-            || epoxy_has_gl_extension("GL_ARB_texture_filter_anisotropic")) {
+    if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) {
         GLfloat mx = 1.0f;
         float want = 16.0f;
         glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &mx);

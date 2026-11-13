@@ -1,5 +1,5 @@
 # Copy the DLLs an executable needs from the toolchain (MSYS2 CLANG64: SDL2,
-# libepoxy, libc++, winpthread) next to it, so it runs from Explorer or any
+# libc++, winpthread) next to it, so it runs from Explorer or any
 # shell, not only one with the toolchain on PATH. Windows' own DLLs stay
 # where they are.
 #

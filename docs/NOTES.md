@@ -179,6 +179,53 @@ Facts about the binary and the decisions made around it. Keep this current.
   whole renderer; the vertex-program translation (`runtime/gpu/shaders.cpp`)
   is the part worth borrowing. The code-generation model would speed the
   game's own thread, which is not the bottleneck today.
+- **2026-11-13: NVIDIA's threaded optimisations on X11 only.** A build
+  copied to a second CachyOS PC (GTX 1080 Ti, driver 580.196, KDE Plasma
+  Wayland) aborted at the first shader compile: "No provider of
+  eglGetCurrentContext found. Requires one of: EGL 14". On Wayland SDL's
+  context is EGL, and with `__GL_THREADED_OPTIMIZATIONS=1` NVIDIA's EGL
+  rejects its own current display (`eglQueryString(eglGetCurrentDisplay(),
+  EGL_VERSION)` fails with `EGL_BAD_DISPLAY`); libepoxy, asking whether the
+  context is desktop GL, aborts on that. Reproduced with a small SDL2 +
+  libepoxy program; GLX (X11) is unaffected. `nv2a_pb_gl_driver_thread` now
+  sets the variable once SDL has picked its video driver, for `x11` only, and
+  before the first window (the progress window's too), which is still in time
+  for the driver. Mesa's `mesa_glthread` is unchanged;
+  `THUG_GL_NO_DRIVER_THREAD=1` still turns both off. With libepoxy gone
+  (next entry) the variable still cannot go on under Wayland with that
+  driver: forced on, the executor's thread fails `eglMakeCurrent` ("error
+  EGL_SUCCESS") and nothing draws. The owner's RTX 4080 (also KDE Wayland,
+  a newer driver) ran with it, unmeasured; there `SDL_VIDEODRIVER=x11` or
+  setting it explicitly (an explicit setting wins) brings it back.
+- **2026-11-13: One self-contained Linux executable** (owner's request: copy
+  `thug` to another PC and run it). `ldd build/bin/thug` now lists only libc
+  and libm (74 MB, RelWithDebInfo); checked on the GTX 1080 Ti PC: native
+  Wayland (libwayland-client, libdecor, NVIDIA EGL loaded at run time), X11
+  with `SDL_VIDEODRIVER=x11` (GLX), headless frame dumps.
+  - SDL 2.32.10 is vendored (`vendor/SDL`, owner's call over a download at
+    configure time) and linked static on Linux (`THUG_BUNDLED_SDL`, on by
+    default; off links the system's SDL2). Its X11, Wayland, PipeWire,
+    PulseAudio and ALSA back ends load their libraries at run time. The
+    toolkit's `find_package(SDL2)` calls are pointed at the same static
+    library (an empty `SDL2Config.cmake` in the build folder), so there is one
+    SDL. Windows keeps the DLLs (the decision above stands there).
+  - Real SDL2, unlike sdl2-compat over SDL3, tries X11 before Wayland, so
+    `thug_window_hints` asks for `wayland,x11` (owner's call: native Wayland
+    as before); `SDL_VIDEODRIVER` still overrides.
+  - libepoxy is replaced by glad 2 (`vendor/glad`: GL 3.3 core plus
+    `ARB_buffer_storage`, `KHR_debug`, `ARB_sample_shading` and the two
+    anisotropic-filtering extensions), loaded once from
+    `SDL_GL_GetProcAddress` after the context is made, on every platform.
+    Without epoxy's GLX/EGL guessing there is nothing left to abort on the
+    driver quirk above. The toolkit's D3D8 layer, whose POSIX back end needs
+    libepoxy, is replaced on Linux by an interface target with its headers:
+    THUG never draws through it.
+  - OpenSSL is no longer linked (toolkit change below), and
+    libstdc++/libgcc are linked static.
+  - What remains from the system: glibc and the GL driver, which must match
+    the installed kernel driver. The glibc floor is the build machine's
+    (2.43 on CachyOS in 2026-11: `atan2f@GLIBC_2.43`), so a build for older
+    distributions has to be made on one.
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.
@@ -239,6 +286,7 @@ carried: `0001` is the former `patches/xboxrecomp/0001-posix-fixes.patch`,
 | vendor | `nv2a_backend.h`, `nv2a_pb_exec.c`: indexed back-end batches. A back end that sets `NV2A_BACKEND_INDEXED` in the new `Nv2aBackend.flags` gets each vertex a batch's triangles share once (`Nv2aBatch.vertices`, `count`) and the triangle list as `indices`/`index_count`; corners made by clipping get vertices of their own. Every other back end gets plain triangle lists as before (a three-member initialiser leaves `flags` 0). Test: `tests/nv2a_ffp_backend` (a four-vertex strip: six vertices for a plain back end; four vertices and six indices for an indexed one, naming the same triangles). | `backend_from_xf` and the renderer's vertex fill converted and copied every shared vertex once per triangle (about 2.7 times per unique vertex in a level) |
 | vendor | `nv2a_pb_exec.c`: `RECOMP_EXEC_PROFILE` also prints walks (kicked segments) per frame. | Diagnostic: THUG kicks 15-36 segments a frame of 25-40 draws each |
 | vendor | `nv2a_pb_exec.c` (`batch_is_ffp`): in fixed-function mode an inline batch (`INLINE_ARRAY`, `SET_VERTEX4F`) is transformed like an array batch. Before, every inline batch went to the screen-space path, which reads positions as pixels. XDK D3D draws pre-transformed (XYZRHW) vertices through its passthrough program, so fixed mode always means object space. Test: `tests/nv2a_ffp_backend` (an inline triangle in world units, coloured and textured). | THUG's breaking glass (`DrawVerticesUP`, fixed function) stuck to the screen as white triangles that drifted up as the shards fell: world positions drawn as pixels, texture q 0. In menus and free skate every other inline batch (about 380,000, and the one immediate batch a frame) runs a vertex program, so nothing else changes |
+| vendor | `src/kernel/CMakeLists.txt`: POSIX no longer links OpenSSL. Nothing called it: `kernel_crypto.c` has its own SHA-1, RC4 and HMAC-SHA1 on every host. New test: `tests/kernel_crypto` (FIPS 180-1, RFC 2202 and RC4 vectors, HMAC data split across both buffers). | A self-contained THUG executable: `libcrypto` (with zlib, brotli and zstd) was its largest dependency, for no calls |
 
 Not fixed, noted: `win32_compat.c` `VirtualAlloc` maps a `PAGE_NOACCESS`
 reserve as read-write, because `PROT_NONE` is 0 and

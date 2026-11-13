@@ -49,7 +49,7 @@ THUG runs its own lifted XDK Direct3D. The toolkit's pushbuffer executor
 (`vendor/xboxrecomp/src/kernel/nv2a_pb_exec.c`, `RECOMP_PB_EXEC=1`) reads the
 NV2A command stream that D3D writes and hands each batch to a render back
 end (`nv2a_backend.h`). The port's back end is `src/gpu/nv2a_pb_gl.c`
-(OpenGL 3.3 through SDL2 and libepoxy). Everything the player sees is built
+(OpenGL 3.3 through SDL2 and glad, `vendor/glad`). Everything the player sees is built
 on it: the window loop (`src/host/host_window.c`), the overlay, MSAA,
 internal resolution, widescreen, smooth text, captures.
 
@@ -83,18 +83,20 @@ the next link of `thug.exe`; the copy there keeps working meanwhile.
 The packages (what it installs; by hand, in any MSYS2 shell):
 
 ```
-pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,libepoxy,python,python-capstone,gdb}
+pacman -S --needed git mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,sdl2-compat,python,python-capstone,gdb}
 ```
 
 SDL2 is `sdl2-compat` (SDL2's API over SDL3): since 2026 MSYS2 marks it as
 replacing the SDL2 package, so `pacman -Syu` swaps it in anyway (a package
 list naming `SDL2` made them swap back and forth). Versions in use
 (2026-11-11): clang 23.1.5, CMake 4.4.5, sdl2-compat 2.32.74 over SDL3
-3.4.20, libepoxy 1.5.10, Python 3.14 with capstone 5.0.x.
+3.4.20, Python 3.14 with capstone 5.0.x. libepoxy (1.5.10 then) is no
+longer used: since 2026-11-13 the renderer loads OpenGL through the
+vendored glad loader on every platform (not yet built on Windows).
 
 The build copies the toolchain DLLs `thug.exe` needs next to it
 (`scripts/copy_runtime_dlls.cmake`): SDL2, SDL3 (which sdl2-compat loads at
-run time, so no import table names it) and its libiconv, libepoxy, libc++
+run time, so no import table names it) and its libiconv, libc++
 and winpthread. It first removes the old copies of those, since the
 dependency resolver looks beside the executable first and would otherwise
 keep a stale DLL. `build\bin` then runs from Explorer or any shell.
