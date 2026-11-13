@@ -51,6 +51,56 @@ if(THUG_BUNDLED_SDL)
     set(SDL2_DIR "${CMAKE_BINARY_DIR}/sdl2-bundled" CACHE PATH "" FORCE)
 endif()
 
+# SDL's configure quietly leaves out any back end whose headers are missing,
+# and the game still builds: without libdecor's, say, a window on GNOME's
+# Wayland has no title bar. These are the Linux back ends a player's desktop
+# may need, each loaded at run time (the *_DYNAMIC names). A missing one is a
+# warning, or an error with THUG_REQUIRE_SDL_BACKENDS (scripts/release.sh).
+# SDL writes its final SDL_config.h at generate time, so this reads the copy
+# its configure leaves.
+if(THUG_BUNDLED_SDL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    option(THUG_REQUIRE_SDL_BACKENDS
+           "Stop the configure when SDL leaves out a Linux back end a release needs" OFF)
+    set(THUG_SDL_BACKENDS
+        "SDL_VIDEO_DRIVER_X11_DYNAMIC|X11"
+        "SDL_VIDEO_DRIVER_X11_XCURSOR|X11 cursors (Xcursor)"
+        "SDL_VIDEO_DRIVER_X11_XFIXES|X11 pointer confinement (XFixes)"
+        "SDL_VIDEO_DRIVER_X11_XINPUT2|X11 input (XInput2)"
+        "SDL_VIDEO_DRIVER_X11_XRANDR|X11 displays and modes (XRandR)"
+        "SDL_VIDEO_DRIVER_X11_XSCRNSAVER|X11 screen saver inhibition (XScrnSaver)"
+        "SDL_VIDEO_OPENGL_GLX|OpenGL on X11 (GLX)"
+        "SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC|Wayland (with xkbcommon)"
+        "SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR|Wayland window decorations (libdecor)"
+        "SDL_VIDEO_OPENGL_EGL|OpenGL on Wayland (EGL)"
+        "SDL_AUDIO_DRIVER_PIPEWIRE_DYNAMIC|PipeWire sound"
+        "SDL_AUDIO_DRIVER_PULSEAUDIO_DYNAMIC|PulseAudio sound"
+        "SDL_AUDIO_DRIVER_ALSA_DYNAMIC|ALSA sound"
+        "SDL_JOYSTICK_HIDAPI|HIDAPI controller drivers"
+        "SDL_UDEV_DYNAMIC|controller hot-plug (udev)"
+        "HAVE_DBUS_DBUS_H|D-Bus (screen saver inhibition, input methods)")
+    file(READ "${CMAKE_BINARY_DIR}/SDL/SDL_config.h.intermediate" THUG_SDL_CONFIG)
+    set(THUG_SDL_MISSING "")
+    foreach(entry IN LISTS THUG_SDL_BACKENDS)
+        string(REPLACE "|" ";" entry "${entry}")
+        list(GET entry 0 def)
+        list(GET entry 1 what)
+        if(NOT THUG_SDL_CONFIG MATCHES "\n#define ${def}[ \t]")
+            string(APPEND THUG_SDL_MISSING "\n  ${what} (${def})")
+        endif()
+    endforeach()
+    if(THUG_SDL_MISSING)
+        set(msg "SDL was configured without these back ends, because their "
+                "development headers are not installed:${THUG_SDL_MISSING}\n"
+                "Install them, then configure a fresh build folder (SDL caches "
+                "what it found).")
+        if(THUG_REQUIRE_SDL_BACKENDS)
+            message(FATAL_ERROR ${msg})
+        else()
+            message(WARNING ${msg})
+        endif()
+    endif()
+endif()
+
 # THUG draws through the pushbuffer executor, never the toolkit's D3D8 layer,
 # whose POSIX back end needs libepoxy: only its headers, which other toolkit
 # code includes.

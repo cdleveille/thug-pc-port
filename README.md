@@ -143,7 +143,8 @@ The Windows build's state and its open items are in
   are installed (they are on any Arch desktop) and loaded at run time.
   `-DTHUG_BUNDLED_SDL=OFF` links the system's SDL2 instead. The executable
   runs on systems with the same or a newer glibc than the one it was built
-  on.
+  on; `scripts/release.sh` builds one for older distributions too (see
+  [Linux release](#linux-release)).
 
 ## Build
 
@@ -178,6 +179,32 @@ build/bin/thug
 ```
 
 `build/bin/thug-extract --list <image>` lists a disc image's files.
+
+## Linux release
+
+```
+scripts/release.sh
+```
+
+This builds a copy of the game for other Linux PCs: it runs on glibc 2.35 and
+newer (Ubuntu 22.04, Debian 12, Fedora 36 and later), where `build/bin/thug`
+needs the build machine's glibc. It needs [Docker](https://docs.docker.com/engine/install/);
+Docker Desktop works as it is, as long as the repository is in a folder it
+shares (your home folder is, by default). The script lifts `default.xbe` here as
+`scripts/build.sh` does, then compiles in an Ubuntu 22.04 container with the
+repository mounted. The first run builds the container image (a few minutes,
+then cached). The result is in `build/release/`:
+
+| | |
+|---|---|
+| `thug-pc-port-<version>-linux-x86_64/` | `thug`, a `README.txt` for players, `licenses/`, and an empty `game/` for their disc image |
+| `thug-pc-port-<version>-linux-x86_64.tar.gz` (and `.sha256`) | the same folder, to upload |
+| `thug-pc-port-<version>-linux-x86_64.debug` | the debug info, kept back: `addr2line -e` it to read a player's crash report |
+
+`<version>` is `git describe` (a commit hash, or the tag once there is one).
+The script stops if the executable would need a newer glibc or a library
+beyond glibc, or if SDL was built without one of its desktop or sound back
+ends.
 
 ## Credits
 

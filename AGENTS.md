@@ -69,6 +69,7 @@ shows something, the game's own code put it there.
 | `src/recomp/gen/` | Generated C (gitignored) |
 | `config/` | Title-specific pipeline inputs (seed functions, etc.) |
 | `scripts/regen.sh` | Run the lifting pipeline: parse, disasm, func_id, abi, recomp |
+| `scripts/release.sh` | Linux release for glibc 2.35+: lifts on the host, compiles in an Ubuntu 22.04 container (`scripts/release/`: Dockerfile, `package.sh`, the player's README), and lays it out in `build/release/` |
 | `scripts/build.bat` | Windows: `scripts/build.sh` from any shell, run in MSYS2's CLANG64 environment; installs MSYS2 and the build packages first when they are missing |
 | `scripts/copy_runtime_dlls.cmake` | Windows: copies the toolchain DLLs `thug.exe` needs next to it after each link (SDL3, which sdl2-compat loads at run time, included) |
 | `docs/` | Title notes, bring-up log, override log, Windows handoff (`WINDOWS.md`) |

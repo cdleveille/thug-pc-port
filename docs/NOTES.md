@@ -225,7 +225,30 @@ Facts about the binary and the decisions made around it. Keep this current.
   - What remains from the system: glibc and the GL driver, which must match
     the installed kernel driver. The glibc floor is the build machine's
     (2.43 on CachyOS in 2026-11: `atan2f@GLIBC_2.43`), so a build for older
-    distributions has to be made on one.
+    distributions has to be made on one: `scripts/release.sh` (next entry).
+- **2026-11-13: Linux releases are compiled in an Ubuntu 22.04 container**
+  (`scripts/release.sh`), so they run on glibc 2.35 and newer: Ubuntu 22.04,
+  Debian 12, Fedora 36 and later.
+  - Not GitHub Actions: lifting needs `default.xbe`, which must not reach
+    GitHub (hard rule 1). Docker on the owner's machine mounts the repository
+    instead, so nothing is copied into the image.
+  - Lifting stays on the host (`scripts/build.sh --lift-only`): a container's
+    capstone from pip could differ from the tested one and lift differently.
+    Only the compile moves.
+  - clang 23 from apt.llvm.org, the version the port is developed with
+    (`scripts/release/Dockerfile`, the key's fingerprint checked).
+  - The container installs every SDL back end's headers, and
+    `THUG_REQUIRE_SDL_BACKENDS` makes a missing one a configure error
+    (otherwise a warning): SDL drops a back end silently and the build still
+    succeeds.
+  - `scripts/release/package.sh` refuses an executable that needs a glibc
+    newer than 2.35, links the C++ runtime as a shared library, or names a
+    library outside glibc. It ships the executable with its debug info
+    removed (`--strip-debug`: the symbol tables, and so the crash
+    reporter's names, stay) and keeps the debug info beside the release.
+  - Jobs are capped by the container's memory, about 700 MB each: the
+    largest lifted chunk peaks at about 320 MB in clang, and Docker
+    Desktop's VM has 8 GB by default.
 - **2026-11-10: Bring-up uses the pushbuffer executor** (`RECOMP_PB_EXEC`).
   The game's own XDK D3D runs unmodified, and the executor consumes its NV2A
   command stream. See "Open questions" for the long-term renderer.

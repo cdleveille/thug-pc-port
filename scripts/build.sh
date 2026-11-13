@@ -2,10 +2,12 @@
 # Rebuild the game: everything from the disc image to build/bin/thug, doing
 # only the steps that are out of date.
 #
-# Usage: scripts/build.sh [--regen] [--release]
-#   --regen    lift default.xbe again from scratch (scripts/regen.sh)
-#   --release  configure a Release build instead of RelWithDebInfo
-#              (only takes effect when build/ is configured for the first time)
+# Usage: scripts/build.sh [--regen] [--release] [--lift-only]
+#   --regen      lift default.xbe again from scratch (scripts/regen.sh)
+#   --release    configure a Release build instead of RelWithDebInfo
+#                (only takes effect when build/ is configured for the first time)
+#   --lift-only  stop after step 2 (scripts/release.sh compiles the lifted C
+#                in a container)
 #
 # Put your disc image (.iso) in game/ first. Steps, each skipped when it has
 # nothing to do:
@@ -24,11 +26,13 @@ cd "$ROOT"
 
 REGEN=0
 BUILD_TYPE=RelWithDebInfo
+LIFT_ONLY=0
 for arg in "$@"; do
   case "$arg" in
-    --regen)   REGEN=1 ;;
-    --release) BUILD_TYPE=Release ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --regen)     REGEN=1 ;;
+    --release)   BUILD_TYPE=Release ;;
+    --lift-only) LIFT_ONLY=1 ;;
+    -h|--help)   sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown option '$arg' (try --help)" >&2; exit 1 ;;
   esac
 done
@@ -67,6 +71,10 @@ elif [[ src/recomp_manual.c -nt $MARK ]]; then
   step "manual overrides changed: regenerating the C"
   scripts/regen.sh --from recomp
   touch "$STAMP"
+fi
+if [[ $LIFT_ONLY -eq 1 ]]; then
+  step "lifted C is up to date"
+  exit 0
 fi
 
 # 3. Compile. (The configure step re-globs src/recomp/gen/ by itself.)
